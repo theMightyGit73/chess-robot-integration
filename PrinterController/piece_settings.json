@@ -1,0 +1,26 @@
+{
+  "pawn": {
+    "height": 9.0,
+    "grip_pw": 2350
+  },
+  "knight": {
+    "height": 14.0,
+    "grip_pw": 2450
+  },
+  "bishop": {
+    "height": 19.0,
+    "grip_pw": 2400
+  },
+  "rook": {
+    "height": 21.0,
+    "grip_pw": 2400
+  },
+  "queen": {
+    "height": 24.0,
+    "grip_pw": 2350
+  },
+  "king": {
+    "height": 25.0,
+    "grip_pw": 2350
+  }
+}

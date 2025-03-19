@@ -1,0 +1,9 @@
+opencv-python
+python-chess
+pyautogui
+mss
+numpy
+pyttsx3
+scikit-image
+pygrabber
+berserk
