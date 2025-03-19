@@ -1,0 +1,24 @@
+{
+    "camera": {
+        "index": 0,
+        "width": 1280,
+        "height": 720,
+        "fps": 30
+    },
+    "printer": {
+        "port": "/dev/ttyUSB0",
+        "baud_rate": 115200
+    },
+    "chess": {
+        "engine_path": "",
+        "skill_level": 10,
+        "thinking_time": 1.0
+    },
+    "debug": false,
+    "speech_enabled": true,
+    "speech": {
+        "language": "en",
+        "volume": 1.0,
+        "rate": 150
+    }
+}
