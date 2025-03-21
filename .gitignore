@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 logs/
 debug/
+__pycache__/
+*.pyc
+*.bin

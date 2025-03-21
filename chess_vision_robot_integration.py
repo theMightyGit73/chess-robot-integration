@@ -1421,7 +1421,21 @@ def process_robot_move_improved(printer):
             squares = printer.chess_game.parse_move(best_san)
             if not squares:
                 logger.error(f"Could not parse move: {best_san}")
-                return False
+                
+                # Special case for pawn captures (e.g., bxc3)
+                if re.match(r'^[a-h]x[a-h][1-8]$', best_san):
+                    try:
+                        # Use python-chess directly to parse the move
+                        move_obj = printer.chess_game.board.parse_san(best_san)
+                        source = chess.square_name(move_obj.from_square)
+                        target = chess.square_name(move_obj.to_square)
+                        logger.info(f"Special handling for pawn capture: {best_san} → {source},{target}")
+                        squares = (source, target)
+                    except Exception as e:
+                        logger.error(f"Special pawn capture handling failed: {e}")
+                        return False
+                else:
+                    return False
                 
             source, target = squares
         except Exception as parse_err:
