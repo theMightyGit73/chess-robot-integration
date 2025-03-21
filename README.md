@@ -1,9 +1,6 @@
 # Chess Vision Robot Integration System
 
-![Chess Robot](docs/images/chess_robot_banner.png)
-
 A comprehensive system that combines computer vision and robotics to play chess on a real chess board. This project integrates the [Play-online-chess-with-real-chess-board](https://github.com/karayaman/Play-online-chess-with-real-chess-board) vision system with a custom 3D printer-based robotic arm to enable a physical robot to play chess against a human opponent.
-
 ## Features
 
 - **Computer Vision**: Detects the chess board and pieces using camera input
