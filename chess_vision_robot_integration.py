@@ -936,6 +936,12 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                 printer.open_gripper(force=True)
                 time.sleep(0.5)  # Wait for mechanical action
             
+            # Enhanced game over check
+            if check_game_over(printer.chess_game):
+                game_in_progress = False
+                announce_game_result(printer, speech)
+                break
+            
             # Check for game over conditions
             if printer.chess_game.board.is_game_over():
                 game_in_progress = False
@@ -1332,6 +1338,24 @@ def process_robot_move_improved(printer):
             logger.warning(f"Error using speech: {e}")
     
     try:
+        # Check if the game is already over
+        if printer.chess_game.board.is_game_over():
+            result = printer.chess_game.board.result()
+            winner = "White" if result == "1-0" else "Black" if result == "0-1" else "Draw"
+            reason = "Checkmate!" if printer.chess_game.board.is_checkmate() else "Stalemate"
+            
+            if printer.chess_game.board.is_checkmate():
+                print(f"\nCHECKMATE! {winner} wins!")
+                if speech:
+                    speech.put_text(f"Checkmate! {winner} wins!")
+            else:
+                print(f"\nGame over! {winner}")
+                if speech:
+                    speech.put_text(f"Game over! {winner}")
+            
+            update_status(f"Game over: {reason}", "INFO")
+            return True
+    
         # Set a timeout for engine evaluation
         start_time = time.time()
         max_wait = 15  # Maximum 15 seconds to wait for evaluation
@@ -1373,7 +1397,7 @@ def process_robot_move_improved(printer):
                     if 0 <= idx < len(legal_moves):
                         best_san = legal_moves[idx]
                         # Create fake eval_info
-                        eval_info = (0.0, best_san)  # Neutral evaluation
+                        eval_info = (0.0, best_san, None)  # Neutral evaluation with no mate
                     else:
                         print("Invalid selection")
                         return False
@@ -1402,8 +1426,8 @@ def process_robot_move_improved(printer):
                     idx = int(choice) - 1
                     if 0 <= idx < len(legal_moves):
                         best_san = legal_moves[idx]
-                        # Create fake eval_info
-                        eval_info = (0.0, best_san)  # Neutral evaluation
+                        # Create fake eval_info with no mate
+                        eval_info = (0.0, best_san, None)
                     else:
                         print("Invalid selection")
                         return False
@@ -1413,9 +1437,13 @@ def process_robot_move_improved(printer):
             else:
                 return False
                 
-        # Extract score and best move in SAN format
-        score, best_san = eval_info
-        
+        # Extract score, best move, and mate information
+        if len(eval_info) >= 3:
+            score, best_san, mate_in = eval_info
+        else:
+            score, best_san = eval_info
+            mate_in = None
+
         # Get source and target squares
         try:
             squares = printer.chess_game.parse_move(best_san)
@@ -1448,19 +1476,39 @@ def process_robot_move_improved(printer):
                 logger.error(f"Failed to extract move coordinates: {e}")
                 return False
         
-        # Display move information
+        # Display move information with mate details
         print("\n" + "-"*60)
-        print(f"ROBOT'S MOVE: {best_san}")
+        if mate_in:
+            if mate_in > 0:
+                print(f"ROBOT'S MOVE: {best_san} (Checkmate in {mate_in})")
+            else:
+                print(f"ROBOT'S MOVE: {best_san} (Getting checkmated in {abs(mate_in)})")
+        else:
+            print(f"ROBOT'S MOVE: {best_san}")
+            
         print(f"Move details: {source.upper()} → {target.upper()}")
-        print(f"Position evaluation: {get_evaluation_text(score)} ({score:.2f})")
+        
+        if mate_in:
+            if mate_in > 0:
+                print(f"Evaluation: Checkmate in {mate_in} moves")
+            else:
+                print(f"Evaluation: I am getting checkmated in {abs(mate_in)} moves")
+        else:
+            print(f"Position evaluation: {get_evaluation_text(score)} ({score:.2f})")
         print("-"*60)
         
         # Announce the planned move with speech
         if speech:
             try:
                 move_text = f"I will move from {source} to {target}"
-                evaluation_text = get_evaluation_text(score)
-                speech.put_text(f"{move_text}. Position is {evaluation_text}.")
+                if mate_in:
+                    if mate_in > 0:
+                        evaluation_text = f"This will checkmate in {mate_in} moves"
+                    else:
+                        evaluation_text = f"I am in trouble, checkmate against me in {abs(mate_in)} moves"
+                else:
+                    evaluation_text = get_evaluation_text(score)
+                speech.put_text(f"{move_text}. {evaluation_text}.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
         
@@ -1564,6 +1612,28 @@ def process_robot_move_improved(printer):
         logger.info(f"Successfully executed move: {best_san}")
         move_to_board_view_position()
         
+        # Check if the move resulted in checkmate or check
+        if '#' in best_san:
+            # This was a checkmate move
+            print("\nCHECKMATE! I win the game.")
+            if speech:
+                try:
+                    speech.put_text("Checkmate! I win the game.")
+                except Exception as e:
+                    logger.warning(f"Error using speech: {e}")
+            
+            # The game is technically over
+            update_status("Game over: Checkmate", "INFO")
+            return True
+        elif '+' in best_san:
+            # This was a check move
+            print("\nCHECK!")
+            if speech:
+                try:
+                    speech.put_text("Check!")
+                except Exception as e:
+                    logger.warning(f"Error using speech: {e}")
+        
         # Announce move completion
         if speech:
             try:
@@ -1587,7 +1657,7 @@ def process_robot_move_improved(printer):
             logger.warning(f"Could not move to viewing position during error recovery: {move_err}")
             
         return False
- 
+         
 def handle_game_pause(printer):
     """
     Handle game pause state with menu options
@@ -1663,43 +1733,70 @@ def handle_game_pause(printer):
             print("Invalid choice. Please enter 1-7.")
 
 def announce_game_result(printer, speech):
-    """Announce the final game result with better formatting"""
+    """Announce the final game result with detailed explanation"""
     if not printer or not printer.chess_game:
         return
     
     try:
-        print("\n======================================")
-        print("           GAME OVER")
-        print("======================================")
+        print("\n" + "="*60)
+        print("                  GAME OVER")
+        print("="*60)
         
         printer.chess_game.display_state(printer.chess_mapper.flipped)
         
-        # Determine result
+        # Determine result with more detailed reason
         result = printer.chess_game.board.result()
+        reason = ""
+        
         if result == "1-0":
-            result_text = "Game over. White wins."
+            result_text = "Game over. White wins"
+            if printer.chess_game.board.is_checkmate():
+                reason = " by checkmate!"
+            else:
+                reason = "."
         elif result == "0-1":
-            result_text = "Game over. Black wins."
+            result_text = "Game over. Black wins"
+            if printer.chess_game.board.is_checkmate():
+                reason = " by checkmate!"
+            else:
+                reason = "."
         elif result == "1/2-1/2":
-            result_text = "Game over. It's a draw."
+            result_text = "Game over. It's a draw"
+            if printer.chess_game.board.is_stalemate():
+                reason = " by stalemate."
+            elif printer.chess_game.board.is_insufficient_material():
+                reason = " due to insufficient material."
+            elif printer.chess_game.board.is_fifty_moves():
+                reason = " by the fifty-move rule."
+            elif printer.chess_game.board.is_repetition():
+                reason = " by threefold repetition."
+            else:
+                reason = "."
         else:
             result_text = "Game ended."
+            reason = ""
         
-        print("\n" + "="*40)
-        print(f"RESULT: {result_text}")
-        print("="*40 + "\n")
+        print("\n" + "="*60)
+        print(f"RESULT: {result_text}{reason}")
+        print("="*60 + "\n")
             
-        update_status(result_text, "INFO")
+        update_status(result_text + reason, "INFO")
         
         # Announce with speech if available
         if speech:
             try:
-                speech.put_text(result_text)
+                speech.put_text(result_text + reason)
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
     except Exception as e:
         logger.error(f"Error announcing game result: {e}")
-
+        
+    # Return to a safe board viewing position
+    try:
+        printer.move_to_board_view_position()
+    except Exception as e:
+        logger.warning(f"Error moving to board view position: {e}")
+        
 
 # --------------------------------------------------------------------
 # Computer Vision
@@ -3217,7 +3314,7 @@ def update_chess_position(chess_game, from_sq, to_sq, promotion=None):
               
 def check_game_over(chess_game):
     """
-    Checks if the game is over and logs the reason.
+    Comprehensive check if the game is over with detailed reason reporting
     
     Args:
         chess_game: Chess game object
@@ -3229,39 +3326,91 @@ def check_game_over(chess_game):
         if chess_game.board.is_game_over():
             reason = "Game over: "
             if chess_game.board.is_checkmate():
-                reason += "Checkmate!"
+                winner = "White" if not chess_game.board.turn else "Black"
+                reason += f"Checkmate! {winner} wins!"
             elif chess_game.board.is_stalemate():
-                reason += "Stalemate"
+                reason += "Stalemate (draw)"
             elif chess_game.board.is_insufficient_material():
-                reason += "Insufficient material"
+                reason += "Insufficient material (draw)"
             elif chess_game.board.is_fifty_moves():
-                reason += "Fifty-move rule"
+                reason += "Fifty-move rule (draw)"
             elif chess_game.board.is_repetition():
-                reason += "Threefold repetition"
+                reason += "Threefold repetition (draw)"
             else:
-                reason += "Unknown reason"
+                reason += "Draw by agreement or other rule"
                 
             logger.info(reason)
             update_status(reason, "INFO")
             return True
+            
+        # Also check for imminent checkmate from engine evaluation
+        try:
+            eval_info = chess_game.get_evaluation()
+            if eval_info and len(eval_info) >= 3:
+                _, _, mate_in = eval_info
+                if mate_in is not None and mate_in > 0 and mate_in <= 1:
+                    # Checkmate next move - we can consider the game decided
+                    winner = "White" if chess_game.board.turn else "Black"
+                    reason = f"Checkmate imminent! {winner} will win next move."
+                    logger.info(reason)
+                    update_status(reason, "INFO")
+                    return True
+        except Exception as eval_err:
+            logger.warning(f"Error checking mate status: {eval_err}")
+        
         return False
     except Exception as e:
         logger.error(f"Error checking game over: {e}")
         return False
-
-def get_evaluation_text(score):
-    """Convert numerical evaluation to descriptive text"""
-    if score > 3:
+        
+def get_evaluation_text(score, mate_in=None):
+    """
+    Convert numerical evaluation or mate score to descriptive text
+    
+    Args:
+        score: Numerical evaluation in pawns (positive = white advantage)
+        mate_in: Number of moves to mate (None if not a mate score)
+        
+    Returns:
+        str: Human-readable evaluation description
+    """
+    if mate_in is not None:
+        if mate_in > 0:
+            if mate_in == 1:
+                return "checkmate next move"
+            elif mate_in == 2:
+                return "checkmate in 2 moves"
+            else:
+                return f"checkmate in {mate_in} moves"
+        else:
+            mate_in = abs(mate_in)
+            if mate_in == 1:
+                return "getting checkmated next move"
+            elif mate_in == 2:
+                return "getting checkmated in 2 moves"
+            else:
+                return f"getting checkmated in {mate_in} moves"
+            
+    # For regular evaluations (non-mate scores)
+    if score > 100:  # Extremely high scores might indicate approaching mates
+        return "completely winning for me"
+    elif score < -100:
+        return "completely winning for you"
+    elif score > 5:
         return "winning for me"
-    elif score > 1:
+    elif score > 2:
         return "better for me"
-    elif score < -3:
+    elif score > 0.5:
+        return "slightly better for me"
+    elif score < -5:
         return "winning for you"
-    elif score < -1:
+    elif score < -2:
         return "better for you"
+    elif score < -0.5:
+        return "slightly better for you"
     else:
         return "approximately even"
- 
+         
 def show_legal_moves(chess_game):
     """
     Display legal moves in a user-friendly format

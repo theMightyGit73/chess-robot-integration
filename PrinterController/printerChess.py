@@ -779,7 +779,7 @@ class ChessGame:
             raise ValueError(f"Invalid move: {san_move}")
     
     def get_evaluation(self) -> Optional[Tuple[float, str]]:
-        """Get position evaluation from Stockfish using configured strength settings."""
+        """Get position evaluation from Stockfish with mate score handling."""
         try:
             if not self.engine:
                 return None
@@ -799,7 +799,28 @@ class ChessGame:
                 )
             )
             
-            score = info["score"].relative.score()
+            # Extract score information
+            score_obj = info["score"].relative
+            
+            # Check if it's a mate score
+            if score_obj.is_mate():
+                # Handle mate scores (-M3, M4, etc.)
+                mate_in = score_obj.mate()
+                
+                # Convert mate score to a large value with sign
+                # M1 = +/- 10000, M2 = +/- 9999, etc.
+                score_float = 10000.0 if mate_in > 0 else -10000.0
+                if mate_in != 0:  # Avoid division by zero
+                    score_float = score_float * (1.0 - (abs(mate_in) - 1) / 1000.0)
+                    
+                # Get best move
+                best_move = self.board.san(info["pv"][0])
+                
+                # Include mate information in return value
+                return (score_float, best_move, mate_in)
+            
+            # Regular score (in centipawns)
+            score = score_obj.score()
             
             # Convert score to float (in pawns)
             if score is not None:
@@ -808,11 +829,12 @@ class ChessGame:
                 # Get best move
                 best_move = self.board.san(info["pv"][0])
                 
-                return (score_float, best_move)
+                return (score_float, best_move, None)  # No mate
             return None
                 
         except Exception as e:
-            print(f"Error getting evaluation: {str(e)}")
+            logger.error(f"Error getting evaluation: {e}")
+            logger.debug(traceback.format_exc())
             return None
             
     def display_state(self, flipped=False) -> None:
@@ -872,16 +894,35 @@ class ChessGame:
         
         # Print evaluation if available
         if eval_info:
-            score, best_move = eval_info
+            # Check if the evaluation includes mate information
+            if len(eval_info) >= 3:
+                score, best_move, mate_in = eval_info
+            else:
+                score, best_move = eval_info
+                mate_in = None
+                
             turn = "White" if self.board.turn else "Black"
             print(f"\nCurrent turn: {turn}")
-            print(f"Evaluation: {score:+.2f}")
-            print(f"Best move: {best_move}")
             
-            # Print advantage
-            if abs(score) > 0.5:
-                advantage = "White" if score > 0 else "Black"
-                print(f"{advantage} has the advantage")
+            # Display mate information if available
+            if mate_in is not None:
+                if mate_in > 0:
+                    print(f"Evaluation: Checkmate in {mate_in} moves")
+                    print(f"Best move: {best_move}")
+                    print(f"{'White' if self.board.turn else 'Black'} can force checkmate")
+                else:
+                    print(f"Evaluation: Getting checkmated in {abs(mate_in)} moves")
+                    print(f"Best move: {best_move} (trying to delay)")
+                    print(f"{'Black' if self.board.turn else 'White'} can force checkmate")
+            else:
+                # Regular evaluation display
+                print(f"Evaluation: {score:+.2f}")
+                print(f"Best move: {best_move}")
+                
+                # Print advantage
+                if abs(score) > 0.5:
+                    advantage = "White" if score > 0 else "Black"
+                    print(f"{advantage} has the advantage")
         else:
             print("\nEngine evaluation not available")
         
@@ -3027,7 +3068,7 @@ class PrinterController:
                         "depth_limit": None
                     })
                     
-                    # Use configured limits
+                    # Get evaluation with configured limits
                     result = self.chess_game.engine.play(
                         self.chess_game.board, 
                         chess.engine.Limit(
@@ -3035,9 +3076,17 @@ class PrinterController:
                             depth=config.get("depth_limit")
                         )
                     )
-                    
+
                     engine_move = self.chess_game.board.san(result.move)
                     print(f"\nStockfish plays: {engine_move}")
+
+                    # Check if the move results in checkmate
+                    is_checkmate = False
+                    if "#" in engine_move:
+                        is_checkmate = True
+                        print("Checkmate!")
+                    elif "+" in engine_move:
+                        print("Check!")
                         
                     # Check if this is a complex move
                     is_complex_move = 'O-O' in engine_move or 'x' in engine_move or engine_move[0].lower() in 'abcdefgh'
