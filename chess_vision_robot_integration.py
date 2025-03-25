@@ -803,6 +803,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
     # Game state tracking
     game_in_progress = True
     move_count = 0
+    game_ending_processed = False
     
     # Difficulty settings mapping for Stockfish configuration
     difficulty_settings = {
@@ -1130,31 +1131,42 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                 game_in_progress = False
     
     # ======== GAME CONCLUSION ========
-    
-    # Move to safe viewing position
-    update_status("Moving to board viewing position", "INFO")
-    try:
-        move_to_board_view_position()
-        # Ensure gripper is open at end of game
-        printer.open_gripper(force=True)
-    except Exception as end_err:
-        logger.warning(f"Error moving to viewing position at game end: {end_err}")
-        logger.debug(traceback.format_exc())
-    
-    # Show final status and statistics
-    logger.info(f"Game over after {move_count} moves")
-    
-    # Display game results with enhanced formatting
-    print("\n" + "="*60)
-    print("                  GAME OVER")
-    print("="*60)
-    print(f"Total moves played: {move_count}")
-    
-    # Show final board state and announce result
-    announce_game_result(printer, speech)
-    
-    # Return success
-    return True
+    if not game_ending_processed:
+        game_ending_processed = True  # Set flag to prevent repeated ending
+        
+        # Move to safe viewing position
+        update_status("Moving to board viewing position", "INFO")
+        try:
+            move_to_board_view_position()
+            # Ensure gripper is open at end of game
+            printer.open_gripper(force=True)
+        except Exception as end_err:
+            logger.warning(f"Error moving to viewing position at game end: {end_err}")
+            logger.debug(traceback.format_exc())
+        
+        # Show final status and statistics once
+        logger.info(f"Game over after {move_count} moves")
+        
+        # Display game results with enhanced formatting - only once
+        print("\n" + "="*60)
+        print("                  GAME OVER")
+        print("="*60)
+        print(f"Total moves played: {move_count}")
+        
+        # Show final board state and announce result - only call these once
+        try:
+            # Announce result first
+            announce_game_result(printer, speech)
+            # Then perform final cleanup
+            end_game_cleanup(printer, speech, announce_result=False)  # Pass flag to prevent re-announcing
+        except Exception as final_err:
+            import logging
+            logging.getLogger("ChessRobot").error(f"Error during final game sequence: {final_err}")
+            import traceback
+            logging.getLogger("ChessRobot").debug(traceback.format_exc())
+        
+        # Return success
+        return True
 
 def process_user_move_improved(pts1, board_basics, printer):
     """Handle the user's move detection, validation, and execution using PrinterController's methods."""
@@ -1733,11 +1745,21 @@ def handle_game_pause(printer):
             print("Invalid choice. Please enter 1-7.")
 
 def announce_game_result(printer, speech):
-    """Announce the final game result with detailed explanation"""
+    """
+    Announce the final game result with detailed explanation.
+    
+    Args:
+        printer: Printer controller object
+        speech: Speech system object
+    """
     if not printer or not printer.chess_game:
         return
     
     try:
+        # Import logging directly to avoid the 'logger not defined' error
+        import logging
+        result_logger = logging.getLogger("ChessRobot")
+        
         print("\n" + "="*60)
         print("                  GAME OVER")
         print("="*60)
@@ -1780,23 +1802,99 @@ def announce_game_result(printer, speech):
         print(f"RESULT: {result_text}{reason}")
         print("="*60 + "\n")
             
-        update_status(result_text + reason, "INFO")
+        result_logger.info(result_text + reason)
         
         # Announce with speech if available
         if speech:
             try:
                 speech.put_text(result_text + reason)
             except Exception as e:
-                logger.warning(f"Error using speech: {e}")
+                result_logger.warning(f"Error using speech: {e}")
     except Exception as e:
-        logger.error(f"Error announcing game result: {e}")
+        # Use the logger directly to avoid the undefined error
+        import logging
+        logging.getLogger("ChessRobot").error(f"Error announcing game result: {e}")
+        import traceback
+        logging.getLogger("ChessRobot").debug(traceback.format_exc())
         
-    # Return to a safe board viewing position
+def end_game_cleanup(printer, speech, announce_result=True):
+    """
+    Comprehensive cleanup at the end of a game with proper error handling.
+    
+    Args:
+        printer: Printer controller object
+        speech: Speech system object
+        announce_result: Whether to call announce_game_result (set to False if already called)
+    """
+    import logging
+    cleanup_logger = logging.getLogger("ChessRobot")
+    cleanup_logger.info("Performing end-game cleanup")
+    
+    # Only show game stats if announcing results (to prevent duplication)
+    if announce_result:
+        try:
+            moves_played = len(printer.chess_game.board.move_stack)
+            cleanup_logger.info(f"Game over after {moves_played} moves")
+            print("\n" + "="*60)
+            print("                  GAME OVER")
+            print("="*60)
+            print(f"Total moves played: {moves_played}")
+        except Exception as e:
+            cleanup_logger.warning(f"Error displaying game stats: {e}")
+    
+        # Announce the result (only if flag is set)
+        try:
+            announce_game_result(printer, speech)
+        except Exception as e:
+            cleanup_logger.error(f"Error in game result announcement: {e}")
+    
+    # Return to home position with proper error handling
     try:
-        printer.move_to_board_view_position()
-    except Exception as e:
-        logger.warning(f"Error moving to board view position: {e}")
+        # Try multiple methods to get to safe position in case one fails
+        cleanup_logger.info("Moving to final safe position")
         
+        # First try integration's method
+        try:
+            move_to_board_view_position()
+            cleanup_logger.info("Successfully moved to board viewing position")
+        except Exception as move_error:
+            cleanup_logger.warning(f"Primary movement method failed: {move_error}")
+            
+            # Fallback to printer's direct methods
+            try:
+                # Move to safe height first (most important for safety)
+                printer.move_to_z_height(printer.SAFE_HEIGHT)
+                cleanup_logger.info("Successfully moved to safe height")
+                
+                # Then try to move Y to access position
+                current_pos = printer.get_position()
+                if current_pos:
+                    printer.move_nozzle_smooth([('Y', printer.ACCESS_Y - current_pos['Y'])])
+                    cleanup_logger.info("Successfully moved to access position")
+            except Exception as fallback_error:
+                cleanup_logger.error(f"Fallback movement also failed: {fallback_error}")
+    except Exception as e:
+        cleanup_logger.error(f"Error during position reset: {e}")
+    
+    # Always ensure gripper is open at the end (safety measure)
+    try:
+        cleanup_logger.info("Ensuring gripper is open")
+        printer.open_gripper(force=True)  # Force open regardless of current state
+    except Exception as e:
+        cleanup_logger.error(f"Error opening gripper: {e}")
+    
+    # Final status announcement
+    try:
+        if speech:
+            speech.put_text("Game completed. Thank you for playing.")
+    except Exception as e:
+        cleanup_logger.warning(f"Error in final speech announcement: {e}")
+    
+    cleanup_logger.info("End-game cleanup completed")
+    print("\nGame completed. Ready for a new game.\n")
+    
+    return True
+           
 
 # --------------------------------------------------------------------
 # Computer Vision
@@ -2745,7 +2843,7 @@ def ensure_debug_dir():
 # --------------------------------------------------------------------
 def move_to_board_view_position():
     """
-    Move printer to a position where it can view the chess board with improved synchronization.
+    Move printer to a position where it can view the chess board with faster combined movements.
     
     Returns:
         bool: True if successfully moved to viewing position, False otherwise
@@ -2759,7 +2857,7 @@ def move_to_board_view_position():
     logger.info("Moving to board viewing position")
     
     try:
-        # Define viewing position constants - use the ones from printer class
+        # Define viewing position constants
         X_view = 0.0  # Center of the board horizontally 
         Y_view = printer.ACCESS_Y  # Far enough back to see the whole board
         Z_view = printer.SAFE_HEIGHT  # High enough to see over pieces
@@ -2768,40 +2866,126 @@ def move_to_board_view_position():
         pos = printer.get_position()
         if not pos:
             logger.error("Could not get current position from printer")
+            # Fallback to blind move to safe height
+            printer.move_to_z_height(printer.SAFE_HEIGHT)
             return False
         
-        # Use printer's smoother movement for combined axes
+        # Two-step approach: First ensure Z safety, then combined X/Y movement
+        
+        # 1. First, just ensure Z is at safe height (if not already)
+        if pos['Z'] < Z_view:
+            if not printer.move_to_z_height(Z_view):
+                logger.error("Failed to move to safe Z height")
+                return False
+        
+        # 2. Combined X/Y movement (once Z is safe)
+        current_pos = printer.get_position() or pos
         movements = []
         
-        # First, make sure we're at safe height
-        if pos['Z'] < Z_view:
-            movements.append(('Z', Z_view - pos['Z']))
+        if abs(current_pos['X'] - X_view) > 0.5:
+            movements.append(('X', X_view - current_pos['X']))
             
-        # Then add X and Y movements if needed
-        if abs(pos['X'] - X_view) > 0.1:
-            movements.append(('X', X_view - pos['X']))
+        if abs(current_pos['Y'] - Y_view) > 0.5:
+            movements.append(('Y', Y_view - current_pos['Y']))
             
-        if abs(pos['Y'] - Y_view) > 0.1:
-            movements.append(('Y', Y_view - pos['Y']))
-            
-        # Use printer's combined move with proper completion waiting
+        # Only execute if we have movements to make
         if movements:
-            success = printer.move_nozzle_smooth(movements)
-            if not success:
-                logger.error("Failed to move to viewing position")
-                return False
-                
-        # Verify position after move
-        printer.wait_for_movement_complete()
+            if not printer.move_nozzle_smooth(movements):
+                logger.warning("Failed to complete horizontal movement")
+            else:
+                logger.info(f"Successfully moved to X={X_view}, Y={Y_view}")
         
-        logger.info("Successfully moved to board viewing position")
         return True
             
     except Exception as e:
         logger.error(f"Error moving to board view position: {e}")
-        logger.debug(traceback.format_exc())
+        # Emergency Z safety
+        try:
+            printer.move_to_z_height(printer.SAFE_HEIGHT)
+        except:
+            pass
         return False
+        
+def ensure_board_view_position(max_retries=2):
+    """
+    Ensure the printer is in a proper board viewing position with retries
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        bool: True if successfully positioned, False otherwise
+    """
+    import logging
+    logger = logging.getLogger("ChessRobot")
+    
+    retries = 0
+    while retries <= max_retries:
+        logger.info(f"Ensuring board view position (attempt {retries+1}/{max_retries+1})")
+        
+        if move_to_board_view_position():
+            if retries > 0:
+                logger.info(f"Successfully reached viewing position after {retries+1} attempts")
+            return True
+            
+        retries += 1
+        if retries <= max_retries:
+            logger.warning(f"Retrying position adjustment ({retries}/{max_retries})")
+            import time
+            time.sleep(1.0)  # Brief pause between attempts
+    
+    logger.error(f"Failed to reach viewing position after {max_retries+1} attempts")
+    return False
 
+def handle_position_transition(target_position, fallback_height=70.0):
+    """
+    Safely transitions between positions with appropriate error handling
+    
+    Args:
+        target_position: The function to call to reach target position
+        fallback_height: Safe Z height to use as fallback (mm)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    import logging
+    logger = logging.getLogger("ChessRobot")
+    global printer
+    
+    if not printer:
+        logger.error("Printer not initialized. Cannot handle position transition.")
+        return False
+    
+    # First, ensure we're at safe Z height
+    try:
+        current_pos = printer.get_position()
+        if current_pos and current_pos['Z'] < fallback_height:
+            logger.info(f"Moving to safe height ({fallback_height}mm) before transition")
+            printer.move_to_z_height(fallback_height)
+        
+        # Now try to reach the target position
+        success = target_position()
+        if success:
+            logger.info("Successfully reached target position")
+            return True
+            
+        # If failed, ensure we're at least at safe height
+        logger.warning("Failed to reach target position, ensuring safe height")
+        printer.move_to_z_height(fallback_height)
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error during position transition: {e}")
+        
+        # Emergency fallback - try to get to safe height
+        try:
+            printer.move_to_z_height(fallback_height)
+            logger.info("Emergency move to safe height successful")
+        except Exception as safe_e:
+            logger.error(f"Emergency height movement failed: {safe_e}")
+            
+        return False
+        
 def ensure_complete_move_sequence(printer, move_uci):
     """
     Enhanced move execution with proper sequencing and waiting
@@ -3314,7 +3498,8 @@ def update_chess_position(chess_game, from_sq, to_sq, promotion=None):
               
 def check_game_over(chess_game):
     """
-    Comprehensive check if the game is over with detailed reason reporting
+    Comprehensive check if the game is over with detailed reason reporting.
+    Announces imminent checkmate but allows final move to be played.
     
     Args:
         chess_game: Chess game object
@@ -3322,7 +3507,11 @@ def check_game_over(chess_game):
     Returns:
         bool: True if game is over, False otherwise
     """
+    import logging
+    logger = logging.getLogger("ChessRobot")
+    
     try:
+        # Check standard game-over conditions
         if chess_game.board.is_game_over():
             reason = "Game over: "
             if chess_game.board.is_checkmate():
@@ -3340,29 +3529,153 @@ def check_game_over(chess_game):
                 reason += "Draw by agreement or other rule"
                 
             logger.info(reason)
-            update_status(reason, "INFO")
+            print(f"\n{reason}")  # Echo to the console for immediate feedback
             return True
             
-        # Also check for imminent checkmate from engine evaluation
+        # Check for imminent checkmate but DON'T end the game prematurely
         try:
             eval_info = chess_game.get_evaluation()
             if eval_info and len(eval_info) >= 3:
-                _, _, mate_in = eval_info
+                score, best_move, mate_in = eval_info
+                
+                # Announce imminent checkmate but continue the game
                 if mate_in is not None and mate_in > 0 and mate_in <= 1:
-                    # Checkmate next move - we can consider the game decided
                     winner = "White" if chess_game.board.turn else "Black"
                     reason = f"Checkmate imminent! {winner} will win next move."
                     logger.info(reason)
-                    update_status(reason, "INFO")
-                    return True
+                    
+                    # Print warning to console with emphasis for user awareness
+                    print(f"\n⚠️  {reason} ⚠️")
+                    
+                    # Important: No return here - let the game continue
+                    
+                # Similarly announce if player is getting checkmated soon
+                elif mate_in is not None and mate_in < 0 and abs(mate_in) <= 2:
+                    loser = "White" if chess_game.board.turn else "Black"
+                    reason = f"{loser} will be checkmated in {abs(mate_in)} moves."
+                    logger.info(reason)
+                    print(f"\n⚠️  {reason} ⚠️")
+                    
+                    # No return here either - continue the game
+                    
         except Exception as eval_err:
             logger.warning(f"Error checking mate status: {eval_err}")
+            # Don't let evaluation errors stop the game
         
+        # Game is not over yet
         return False
+        
     except Exception as e:
         logger.error(f"Error checking game over: {e}")
-        return False
+        import traceback
+        logger.debug(traceback.format_exc())
+        return False  # In case of errors, default to continuing the game
+
+def handle_game_ending_transition(printer, speech, player_is_white):
+    """
+    Handle the transition period after a game has ended.
+    Provides feedback and prepares the system for the next game.
+    
+    Args:
+        printer: Printer controller object
+        speech: Speech system object
+        player_is_white: Whether the human played as white
         
+    Returns:
+        None
+    """
+    import logging
+    logger = logging.getLogger("ChessRobot")
+    
+    try:
+        # Display an eye-catching game over message
+        print("\n" + "★"*60)
+        print("                  GAME COMPLETED")
+        print("★"*60)
+        
+        # Show a summary of what will happen next
+        print("\nTransitioning to safe position before returning to menu...")
+        print("The board will move to viewing position for safety.")
+        
+        # Speech announcement if available
+        if speech:
+            try:
+                speech.put_text("Game completed. Returning to home position.")
+            except Exception as e:
+                logger.warning(f"Error using speech during end transition: {e}")
+                
+        # Move to a safe position with multiple fallback options
+        safe_position_reached = False
+        
+        # Try the main method first
+        try:
+            logger.info("Moving to safe board viewing position")
+            printer.move_to_board_viewing_position()
+            logger.info("Successfully moved to viewing position")
+            safe_position_reached = True
+        except Exception as e:
+            logger.warning(f"Primary method to move to viewing position failed: {e}")
+            
+            # First fallback - try move_to_board_view_position 
+            try:
+                from chess_vision_robot_integration import move_to_board_view_position
+                move_to_board_view_position()
+                logger.info("Successfully moved to viewing position via integration function")
+                safe_position_reached = True
+            except Exception as e2:
+                logger.warning(f"First fallback method also failed: {e2}")
+                
+                # Second fallback - direct Z height for safety
+                try:
+                    # Most important is to get Z to a safe height
+                    printer.move_to_z_height(printer.SAFE_HEIGHT)
+                    logger.info("Successfully moved to safe height (partial success)")
+                    safe_position_reached = True  # At least Z is safe
+                except Exception as e3:
+                    logger.error(f"All movement methods failed: {e3}")
+        
+        # Ensure gripper is open (safety measure)
+        try:
+            logger.info("Ensuring gripper is open")
+            printer.open_gripper(force=True)
+        except Exception as e:
+            logger.error(f"Error opening gripper: {e}")
+            
+        # Indicate transition is complete
+        if safe_position_reached:
+            print("\nTransition complete. System is in a safe state.")
+        else:
+            print("\nWARNING: Could not reach safe position. Manual intervention may be needed.")
+            
+        # Final speech announcement if available
+        if speech:
+            try:
+                result = printer.chess_game.board.result()
+                winner_message = ""
+                
+                if result == "1-0":
+                    winner_message = "White won the game."
+                    if not player_is_white:
+                        winner_message += " Better luck next time."
+                    else:
+                        winner_message += " Congratulations!"
+                elif result == "0-1":
+                    winner_message = "Black won the game." 
+                    if player_is_white:
+                        winner_message += " Better luck next time."
+                    else:
+                        winner_message += " Congratulations!"
+                else:
+                    winner_message = "The game was a draw."
+                
+                speech.put_text(f"Game over. {winner_message} Ready to return to the main menu.")
+            except Exception as e:
+                logger.warning(f"Error in final game announcement: {e}")
+                
+    except Exception as e:
+        logger.error(f"Error during game ending transition: {e}")
+        print("\nERROR: Problem with game ending transition. Returning to menu.")
+                        
 def get_evaluation_text(score, mate_in=None):
     """
     Convert numerical evaluation or mate score to descriptive text
