@@ -800,7 +800,7 @@ class ChessGame:
             )
             
             # Extract score information
-            score_obj = info["score"].relative
+            score_obj = info["score"].white()
             
             # Check if it's a mate score
             if score_obj.is_mate():
