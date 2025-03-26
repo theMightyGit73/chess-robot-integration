@@ -808,7 +808,8 @@ class ChessGame:
                 mate_in = score_obj.mate()
                 
                 # Convert mate score to a large value with sign
-                # M1 = +/- 10000, M2 = +/- 9999, etc.
+                # Positive mate = White will checkmate
+                # Negative mate = Black will checkmate
                 score_float = 10000.0 if mate_in > 0 else -10000.0
                 if mate_in != 0:  # Avoid division by zero
                     score_float = score_float * (1.0 - (abs(mate_in) - 1) / 1000.0)
@@ -816,7 +817,7 @@ class ChessGame:
                 # Get best move
                 best_move = self.board.san(info["pv"][0])
                 
-                # Include mate information in return value
+                # Include mate information in return value - ALWAYS from White's perspective
                 return (score_float, best_move, mate_in)
             
             # Regular score (in centipawns)
@@ -906,14 +907,12 @@ class ChessGame:
             
             # Display mate information if available
             if mate_in is not None:
-                if mate_in > 0:
-                    print(f"Evaluation: Checkmate in {mate_in} moves")
-                    print(f"Best move: {best_move}")
-                    print(f"{'White' if self.board.turn else 'Black'} can force checkmate")
-                else:
-                    print(f"Evaluation: Getting checkmated in {abs(mate_in)} moves")
-                    print(f"Best move: {best_move} (trying to delay)")
-                    print(f"{'Black' if self.board.turn else 'White'} can force checkmate")
+                if mate_in > 0:  # Positive mate = White wins
+                    print(f"Evaluation: White will checkmate in {mate_in} moves")
+                    print("White can force checkmate")
+                else:  # Negative mate = Black wins
+                    print(f"Evaluation: Black will checkmate in {abs(mate_in)} moves")
+                    print("Black can force checkmate")
             else:
                 # Regular evaluation display
                 print(f"Evaluation: {score:+.2f}")
