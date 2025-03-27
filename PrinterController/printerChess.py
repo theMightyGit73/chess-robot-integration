@@ -49,7 +49,7 @@ class PrinterConfig:
     # Movement settings
     gripper_step: int = 5  # µs step per iteration
     gripper_delay: float = 0.005  # seconds
-    xy_feedrate: int = 6000  # Increased for faster movement
+    xy_feedrate: int = 18000  # Increased for faster movement
     z_feedrate: int = 2000   # Increased for faster movement
     
     # Movement limits (in mm)
@@ -1225,11 +1225,11 @@ class PrinterController:
         self.ser.write(batched_command.encode())
         
         # More substantial waiting time for command processing
-        wait_time = 0.05  # 50ms minimum
+        wait_time = 0.005  # 5ms minimum
         
         # Extra time if movement commands are present
         if has_movement_commands:
-            wait_time = 0.2  # 200ms for movements
+            wait_time = 0.02  # 20ms for movements
         
         # Wait for commands to be processed
         time.sleep(wait_time)
@@ -1240,7 +1240,7 @@ class PrinterController:
         # If we expected a response but got none, wait longer and try again
         if (has_movement_commands or any(cmd.startswith(('M114', 'G28')) 
                                        for cmd in self.command_buffer)) and not responses:
-            time.sleep(0.3)  # Additional 300ms wait
+            time.sleep(0.03)  # Additional 30ms wait
             responses = [line.decode().strip() for line in self.ser.readlines()]
         
         # Clear the buffer
@@ -1389,21 +1389,21 @@ class PrinterController:
             response = self.send_gcode("M400")
             
             # Significant delay needed for mechanical completion
-            time.sleep(0.2)  # 200ms - much more realistic
+            time.sleep(0.02)  # 20ms - much more realistic
             
             # Look for acknowledgment in response
             acknowledgment_received = any("ok" in line.lower() for line in response)
             
             if not acknowledgment_received:
                 # If no acknowledgment received, add extra wait time
-                time.sleep(0.5)  # 500ms additional wait
+                time.sleep(0.05)  # 50ms additional wait
                 
             # Double-check position to confirm completion
             pos = self.get_position()
             if pos is None:
                 self.logger.warning("Could not verify movement completion")
                 # Additional wait if position check failed
-                time.sleep(0.5)
+                time.sleep(0.05)
                 
             return True
         except Exception as e:

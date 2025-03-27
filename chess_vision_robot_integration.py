@@ -192,7 +192,7 @@ def init_camera(retries=3, retry_delay=2):
             
             video_capture = None
             gc.collect()  # Force garbage collection
-            time.sleep(0.5)  # Give time for resources to be released
+            time.sleep(0.1)  # Give time for resources to be released
             
             # Create and start new camera thread
             video_capture = Video_capture_thread()
@@ -721,7 +721,7 @@ def check_camera_stability():
             else:
                 logger.error("Failed to reinitialize camera")
                 
-        time.sleep(1)
+        time.sleep(0.1)
     
     logger.error("Camera stability check failed after multiple attempts")
     print("WARNING: Camera may not be working properly. Proceed with caution.")
@@ -863,7 +863,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
     if not printer.verify_gripper_state("open"):
         logger.warning("Gripper not in open state - forcing open")
         printer.open_gripper(force=True)
-        time.sleep(0.5)  # Wait for mechanical action
+        time.sleep(0.05)  # Wait for mechanical action
     
     # Move to board viewing position using PrinterController's method
     update_status("Moving to board viewing position", "INFO")
@@ -871,7 +871,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
         # Try to move to viewing position with retry
         if not move_to_board_view_position():
             logger.warning("Failed to move to viewing position - will try again")
-            time.sleep(1)
+            time.sleep(0.1)
             if not move_to_board_view_position():
                 update_status("Warning: Could not move to optimal viewing position", "WARNING")
                 if not prompt_yes_no("Continue anyway?"):
@@ -935,7 +935,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
             if not printer.verify_gripper_state("open"):
                 logger.warning("Gripper not in open state at turn start - forcing open")
                 printer.open_gripper(force=True)
-                time.sleep(0.5)  # Wait for mechanical action
+                time.sleep(0.05)  # Wait for mechanical action
             
             # Enhanced game over check
             if check_game_over(printer.chess_game):
@@ -968,7 +968,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                             user_move_success = True
                             move_count += 1
                             # Add slight delay to ensure move is fully registered
-                            time.sleep(0.5)
+                            time.sleep(0.05)
                             break
                         else:
                             # Check if game was paused
@@ -1015,7 +1015,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                         logger.info("Moving to viewing position after user move")
                         move_to_board_view_position()
                         # Add small delay for stability
-                        time.sleep(0.5)
+                        time.sleep(0.05)
                     except Exception as pos_err:
                         logger.warning(f"Error moving to viewing position: {pos_err}")
                         # Non-critical error, continue
@@ -1039,7 +1039,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                             error_count = 0  # Reset error count on success
                             consecutive_failures = 0  # Reset consecutive failures
                             # Add slight delay to ensure move is fully registered
-                            time.sleep(0.5)
+                            time.sleep(0.05)
                             break
                         else:
                             # Check if game was paused
@@ -1092,7 +1092,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                         logger.info("Moving to viewing position after robot move")
                         move_to_board_view_position()
                         # Add small delay for stability
-                        time.sleep(0.5)
+                        time.sleep(0.05)
                     except Exception as pos_err:
                         logger.warning(f"Error moving to viewing position: {pos_err}")
                         # Non-critical error, continue
@@ -1385,11 +1385,11 @@ def process_robot_move_improved(printer):
                     retry_count += 1
                     logger.warning(f"Engine evaluation attempt {retry_count} failed, retrying...")
                     print(f"Engine evaluation attempt {retry_count}/{max_retries}...")
-                    time.sleep(1.0)  # Longer delay between retries
+                    time.sleep(0.1)  # Longer delay between retries
             except Exception as retry_err:
                 logger.warning(f"Error during evaluation attempt {retry_count}: {retry_err}")
                 retry_count += 1
-                time.sleep(1.0)
+                time.sleep(0.1)
                 
         # If we're taking too long, offer to select a move manually
         if time.time() - start_time > max_wait / 2 and not eval_info:
@@ -1488,36 +1488,38 @@ def process_robot_move_improved(printer):
                 logger.error(f"Failed to extract move coordinates: {e}")
                 return False
         
+        
         # Display move information with mate details
         print("\n" + "-"*60)
         if mate_in:
-            if mate_in > 0:
+            if mate_in > 0:  # Positive mate = White wins
                 print(f"ROBOT'S MOVE: {best_san} (Checkmate in {mate_in})")
-            else:
-                print(f"ROBOT'S MOVE: {best_san} (Getting checkmated in {abs(mate_in)})")
+            else:  # Negative mate = Black wins
+                # Fixed interpretation - no longer depends on turn
+                print(f"ROBOT'S MOVE: {best_san} (Black will checkmate in {abs(mate_in)})")
         else:
             print(f"ROBOT'S MOVE: {best_san}")
             
         print(f"Move details: {source.upper()} → {target.upper()}")
-        
+
         if mate_in:
-            if mate_in > 0:
-                print(f"Evaluation: Checkmate in {mate_in} moves")
-            else:
-                print(f"Evaluation: I am getting checkmated in {abs(mate_in)} moves")
+            if mate_in > 0:  # Positive mate = White wins
+                print(f"Evaluation: White will checkmate in {mate_in} moves")
+            else:  # Negative mate = Black wins
+                print(f"Evaluation: Black will checkmate in {abs(mate_in)} moves")
         else:
             print(f"Position evaluation: {get_evaluation_text(score)} ({score:.2f})")
         print("-"*60)
-        
+
         # Announce the planned move with speech
         if speech:
             try:
                 move_text = f"I will move from {source} to {target}"
                 if mate_in:
-                    if mate_in > 0:
+                    if mate_in > 0:  # Positive mate = White wins
                         evaluation_text = f"This will checkmate in {mate_in} moves"
-                    else:
-                        evaluation_text = f"I am in trouble, checkmate against me in {abs(mate_in)} moves"
+                    else:  # Negative mate = Black wins
+                        evaluation_text = f"Black will checkmate in {abs(mate_in)} moves"
                 else:
                     evaluation_text = get_evaluation_text(score)
                 speech.put_text(f"{move_text}. {evaluation_text}.")
@@ -1558,7 +1560,7 @@ def process_robot_move_improved(printer):
                 if time.time() - last_status_time > 5:  # Report status every 5 seconds
                     print(f"Move execution in progress... ({elapsed:.1f}s elapsed)")
                     last_status_time = time.time()
-                time.sleep(0.5)
+                time.sleep(0.05)
         
         # Start monitor thread
         import threading
@@ -2001,9 +2003,9 @@ def detect_move(pts1, board_basics, timeout=300):
                 
             except Exception as e:
                 logger.warning(f"Error during stabilization: {e}")
-                time.sleep(0.1)
+                time.sleep(0.01)
         else:
-            time.sleep(0.1)
+            time.sleep(0.01)
 
     logger.info("Now waiting for user move on board...")
     start_time = time.time()
@@ -2295,11 +2297,11 @@ def wait_until_motion_completes(pts1, motion_fgbg, threshold=1.5, max_wait=30):
                 consecutive_stable_frames = 0
                 logger.debug(f"Motion still detected: {mean:.2f}")
                 
-            time.sleep(0.1)  # Small delay between frames
+            time.sleep(0.01)  # Small delay between frames
         
         except Exception as e:
             logger.warning(f"Error in motion completion detection: {e}")
-            time.sleep(0.5)
+            time.sleep(0.05)
     
     elapsed = time.time() - start_time
     
@@ -2353,7 +2355,7 @@ def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, thr
         
         frame = video_capture.get_frame()
         if frame is None:
-            time.sleep(0.1)
+            time.sleep(0.01)
             continue
             
         try:
@@ -2413,7 +2415,7 @@ def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, thr
                 
         except Exception as e:
             logger.warning(f"Error in motion detection: {e}")
-            time.sleep(0.1)
+            time.sleep(0.01)
     
     logger.warning("Motion detection timed out")
     return False
@@ -3539,24 +3541,19 @@ def check_game_over(chess_game):
                 score, best_move, mate_in = eval_info
                 
                 # Announce imminent checkmate but continue the game
-                if mate_in is not None and mate_in > 0 and mate_in <= 1:
-                    winner = "White" if chess_game.board.turn else "Black"
-                    reason = f"Checkmate imminent! {winner} will win next move."
-                    logger.info(reason)
-                    
-                    # Print warning to console with emphasis for user awareness
-                    print(f"\n⚠️  {reason} ⚠️")
+                if mate_in is not None:
+                    if mate_in > 0:  # Positive mate = White wins
+                        reason = f"White will checkmate in {mate_in} moves."
+                        if mate_in <= 2:  # Only announce if it's close
+                            logger.info(reason)
+                            print(f"\n⚠️  {reason} ⚠️")
+                    else:  # Negative mate = Black wins
+                        reason = f"Black will checkmate in {abs(mate_in)} moves."
+                        if abs(mate_in) <= 2:  # Only announce if it's close
+                            logger.info(reason)
+                            print(f"\n⚠️  {reason} ⚠️")
                     
                     # Important: No return here - let the game continue
-                    
-                # Similarly announce if player is getting checkmated soon
-                elif mate_in is not None and mate_in < 0 and abs(mate_in) <= 2:
-                    loser = "White" if chess_game.board.turn else "Black"
-                    reason = f"{loser} will be checkmated in {abs(mate_in)} moves."
-                    logger.info(reason)
-                    print(f"\n⚠️  {reason} ⚠️")
-                    
-                    # No return here either - continue the game
                     
         except Exception as eval_err:
             logger.warning(f"Error checking mate status: {eval_err}")
@@ -3570,7 +3567,7 @@ def check_game_over(chess_game):
         import traceback
         logger.debug(traceback.format_exc())
         return False  # In case of errors, default to continuing the game
-
+        
 def handle_game_ending_transition(printer, speech, player_is_white):
     """
     Handle the transition period after a game has ended.
@@ -3688,41 +3685,41 @@ def get_evaluation_text(score, mate_in=None):
         str: Human-readable evaluation description
     """
     if mate_in is not None:
-        if mate_in > 0:
+        if mate_in > 0:  # Positive mate = White wins
             if mate_in == 1:
-                return "checkmate next move"
+                return "White will checkmate next move"
             elif mate_in == 2:
-                return "checkmate in 2 moves"
+                return "White will checkmate in 2 moves"
             else:
-                return f"checkmate in {mate_in} moves"
-        else:
+                return f"White will checkmate in {mate_in} moves"
+        else:  # Negative mate = Black wins
             mate_in = abs(mate_in)
             if mate_in == 1:
-                return "getting checkmated next move"
+                return "Black will checkmate next move"
             elif mate_in == 2:
-                return "getting checkmated in 2 moves"
+                return "Black will checkmate in 2 moves"
             else:
-                return f"getting checkmated in {mate_in} moves"
-            
+                return f"Black will checkmate in {mate_in} moves"
+    
     # For regular evaluations (non-mate scores)
     if score > 100:  # Extremely high scores might indicate approaching mates
-        return "completely winning for me"
-    elif score < -100:
-        return "completely winning for you"
+        advantage_text = "completely winning for White" if score > 0 else "completely winning for Black"
     elif score > 5:
-        return "winning for me"
+        advantage_text = "winning for White" if score > 0 else "winning for Black"
     elif score > 2:
-        return "better for me"
+        advantage_text = "better for White" if score > 0 else "better for Black" 
     elif score > 0.5:
-        return "slightly better for me"
+        advantage_text = "slightly better for White" if score > 0 else "slightly better for Black"
     elif score < -5:
-        return "winning for you"
+        advantage_text = "winning for Black" if score < 0 else "winning for White"
     elif score < -2:
-        return "better for you"
+        advantage_text = "better for Black" if score < 0 else "better for White"
     elif score < -0.5:
-        return "slightly better for you"
+        advantage_text = "slightly better for Black" if score < 0 else "slightly better for White"
     else:
-        return "approximately even"
+        advantage_text = "approximately even"
+    
+    return advantage_text
          
 def show_legal_moves(chess_game):
     """
