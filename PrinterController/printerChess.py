@@ -49,7 +49,7 @@ class PrinterConfig:
     # Movement settings
     gripper_step: int = 5  # µs step per iteration
     gripper_delay: float = 0.005  # seconds
-    xy_feedrate: int = 18000  # Increased for faster movement
+    xy_feedrate: int = 24000  # Increased for faster movement
     z_feedrate: int = 2000   # Increased for faster movement
     
     # Movement limits (in mm)
@@ -1269,13 +1269,13 @@ class PrinterController:
     def move_nozzle_smooth(self, movements: List[Tuple[str, float]], feedrate: Optional[int] = None) -> bool:
         """Enhanced multi-axis movement with proper completion waiting."""
         try:
-            # [Existing validation code]
             
             # Combine movements into single command
             movement_str = " ".join([f"{axis}{value}" for axis, value in movements])
+            actual_feedrate = feedrate if feedrate is not None else self.config.xy_feedrate
             commands = [
                 "G91",  # Relative positioning
-                f"G1 {movement_str} F{feedrate}",
+                f"G1 {movement_str} F{actual_feedrate}",
                 "G90",  # Back to absolute
                 "M400"  # Wait for completion
             ]
@@ -2066,7 +2066,7 @@ class PrinterController:
             
             # Release the piece using slow mode for controlled release
             self.logger.info("Releasing piece")
-            if not self.open_gripper(slow_mode=True):
+            if not self.open_gripper(slow_mode=False):
                 self.logger.error("Failed to release piece normally - attempting emergency release")
                 self.emergency_release()
                 # Continue with move regardless
@@ -2263,7 +2263,7 @@ class PrinterController:
                 
             # Grip the king
             self.logger.info(f"Gripping king with pulse width {king_settings['grip_pw']}")
-            if not self.set_gripper_position(king_settings['grip_pw'], slow_mode=True):
+            if not self.set_gripper_position(king_settings['grip_pw'], slow_mode=False):
                 self.logger.error("Failed to grip king")
                 # Emergency move back up to safe height
                 self.move_nozzle_smooth([('Z', self.SAFE_HEIGHT - king_settings['height'])])
@@ -2317,7 +2317,7 @@ class PrinterController:
             
             # Release the king using slow mode for controlled release
             self.logger.info("Releasing king")
-            if not self.open_gripper(slow_mode=True):
+            if not self.open_gripper(slow_mode=False):
                 self.logger.error("Failed to release king normally - attempting emergency release")
                 self.emergency_release()
                 # Continue with move regardless
@@ -2392,7 +2392,7 @@ class PrinterController:
                 
             # Grip the rook
             self.logger.info(f"Gripping rook with pulse width {rook_settings['grip_pw']}")
-            if not self.set_gripper_position(rook_settings['grip_pw'], slow_mode=True):
+            if not self.set_gripper_position(rook_settings['grip_pw'], slow_mode=False):
                 self.logger.error("Failed to grip rook")
                 # Emergency move back up to safe height
                 self.move_nozzle_smooth([('Z', self.SAFE_HEIGHT - rook_settings['height'])])
@@ -2446,7 +2446,7 @@ class PrinterController:
             
             # Release the rook using slow mode for controlled release
             self.logger.info("Releasing rook")
-            if not self.open_gripper(slow_mode=True):
+            if not self.open_gripper(slow_mode=False):
                 self.logger.error("Failed to release rook normally - attempting emergency release")
                 self.emergency_release()
                 # Continue with move regardless
@@ -2653,7 +2653,7 @@ class PrinterController:
             
             # Release the piece using slow mode for controlled release
             self.logger.info("Releasing piece")
-            if not self.open_gripper(slow_mode=True):
+            if not self.open_gripper(slow_mode=False):
                 self.logger.error("Failed to release piece normally - attempting emergency release")
                 self.emergency_release()
                 # Continue with move regardless
@@ -2773,7 +2773,7 @@ class PrinterController:
             
             # Grip the piece
             self.logger.info(f"Gripping piece with pulse width {piece_settings['grip_pw']}")
-            if not self.set_gripper_position(piece_settings['grip_pw'], slow_mode=True):
+            if not self.set_gripper_position(piece_settings['grip_pw'], slow_mode=False):
                 self.logger.error("Failed to grip piece")
                 # Emergency move back up to safe height
                 self.move_nozzle_smooth([('Z', self.SAFE_HEIGHT - piece_settings['height'])])
@@ -2834,7 +2834,7 @@ class PrinterController:
             
             # Release the piece using slow mode for controlled release
             self.logger.info("Releasing piece")
-            if not self.open_gripper(slow_mode=True):
+            if not self.open_gripper(slow_mode=False):
                 self.logger.error("Failed to release piece normally - attempting emergency release")
                 self.emergency_release()
                 # Continue with move regardless

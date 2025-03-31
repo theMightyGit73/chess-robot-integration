@@ -796,6 +796,14 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
         update_status("Calibration data missing. Run calibration first.", "ERROR")
         return False
     
+    # Ask user about verification preference
+    print("\nVerification Settings:")
+    print("Enable verifications during the game? This will be slower but more reliable.")
+    verification_enabled = prompt_yes_no("Enable verifications? (yes/no)")
+    
+    # Display verification setting as part of game information
+    print(f"Verifications: {'Enabled' if verification_enabled else 'Disabled'}")
+    
     # Error tracking 
     error_count = 0
     consecutive_failures = 0
@@ -964,7 +972,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                         logger.info(f"Processing user move (attempt {user_move_attempts}/{MAX_USER_MOVE_ATTEMPTS})")
                         
                         # Process the user's move using enhanced function
-                        if process_user_move_improved(pts1, board_basics, printer):
+                        if process_user_move_improved(pts1, board_basics, printer, verification_enabled):
                             user_move_success = True
                             move_count += 1
                             # Add slight delay to ensure move is fully registered
@@ -1033,7 +1041,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                         logger.info(f"Processing robot move (attempt {robot_move_attempts}/{MAX_ROBOT_MOVE_ATTEMPTS})")
                         
                         # Process the robot's move using our enhanced function
-                        if process_robot_move_improved(printer):
+                        if process_robot_move_improved(printer, verification_enabled):
                             robot_move_success = True
                             move_count += 1
                             error_count = 0  # Reset error count on success
@@ -1098,7 +1106,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
                         # Non-critical error, continue
             
             # Optional pause after completing full turn
-            if game_in_progress and move_count % 2 == 0 and move_count > 0:
+            if game_in_progress and verification_enabled and move_count % 2 == 0 and move_count > 0:
                 try:
                     print("\nCompleted move pair. Type 'pause' or press Enter to continue: ", end="")
                     response = input().strip().lower()
@@ -1168,7 +1176,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
         # Return success
         return True
 
-def process_user_move_improved(pts1, board_basics, printer):
+def process_user_move_improved(pts1, board_basics, printer, verification_enabled=True):
     """Handle the user's move detection, validation, and execution using PrinterController's methods."""
     global speech, stop_event, debug_visualization
     
@@ -1194,7 +1202,7 @@ def process_user_move_improved(pts1, board_basics, printer):
     while user_move_uci is None and detection_attempts < MAX_DETECTION_ATTEMPTS:
         try:
             print("\nWaiting for movement on the chess board...")
-            user_move_uci = detect_move(pts1, board_basics)
+            user_move_uci = detect_move(pts1, board_basics, verification_enabled=verification_enabled)
             
             # Check for stop event
             if stop_event.is_set():
@@ -1332,7 +1340,7 @@ def process_user_move_improved(pts1, board_basics, printer):
         update_status("Error updating chess position", "ERROR")
         return False
 
-def process_robot_move_improved(printer):
+def process_robot_move_improved(printer, verification_enabled=True):
     """
     Handle the robot's move calculation and execution using PrinterChess methods.
     Uses enhanced timeout and directly leverages printer functionality.
@@ -1527,12 +1535,13 @@ def process_robot_move_improved(printer):
                 logger.warning(f"Error using speech: {e}")
         
         # Ask for confirmation before executing move
-        confirm = input("\nReady for robot to execute move? (yes/pause/abort): ").strip().lower()
-        if confirm == "pause":
-            return False
-        elif confirm != "yes" and confirm != "y" and confirm != "":
-            if prompt_yes_no("Would you like to abort this move?"):
+        if verification_enabled:
+            confirm = input("\nReady for robot to execute move? (yes/pause/abort): ").strip().lower()
+            if confirm == "pause":
                 return False
+            elif confirm != "yes" and confirm != "y" and confirm != "":
+                if prompt_yes_no("Would you like to abort this move?"):
+                    return False
         
         # Extra verification to ensure camera is not restarting
         check_camera_stability()
@@ -1901,7 +1910,7 @@ def end_game_cleanup(printer, speech, announce_result=True):
 # --------------------------------------------------------------------
 # Computer Vision
 # --------------------------------------------------------------------
-def detect_move(pts1, board_basics, timeout=300):
+def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
     """Enhanced move detection with timeout, robustness improvements, and visualization"""
     global video_capture, stop_event, debug_visualization, printer
     
@@ -2164,38 +2173,28 @@ def detect_move(pts1, board_basics, timeout=300):
             
             # Display the detected move to the user for confirmation
             print(f"\nDetected move: {src.upper()} → {tgt.upper()}")
-            if speech:
-                try:
-                    speech.put_text(f"I think I detected a move from {src} to {tgt}, but I'm not certain. Please confirm.")
-                except Exception as e:
-                    logger.warning(f"Error using speech: {e}")
-            confirm = input("Is this correct? (y/n/retry): ").strip().lower()
             
-            if confirm == 'y' or confirm == '':
+            # Always clean up debug windows before returning
+            try:
                 if debug_visualization:
                     cv2.destroyAllWindows()
-                return move_uci
-            elif confirm == 'retry':
-                # Reset background models and try again
-                move_fgbg = cv2.createBackgroundSubtractorKNN()
-                motion_fgbg = cv2.createBackgroundSubtractorKNN(history=80)
-                stabilization_frames = 0
-                is_motion_detected = False
-                if debug_visualization:
-                    cv2.destroyAllWindows()
-                return detect_move(pts1, board_basics, timeout)
-            else:
-                # Let user enter the move manually
-                print("\nPlease enter your move manually:")
-                from_square = input("From square (e.g., e2): ").strip().lower()
-                to_square = input("To square (e.g., e4): ").strip().lower()
+            except Exception as e:
+                logger.warning(f"Error closing debug windows: {e}")
+            
+            if verification_enabled:
+                if speech:
+                    try:
+                        speech.put_text(f"I think I detected a move from {src} to {tgt}, but I'm not certain. Please confirm.")
+                    except Exception as e:
+                        logger.warning(f"Error using speech: {e}")
+                confirm = input("Is this correct? (y/n/retry): ").strip().lower()
                 
-                if re.match(r'^[a-h][1-8]$', from_square) and re.match(r'^[a-h][1-8]$', to_square):
+                if confirm == 'y' or confirm == '':
                     if debug_visualization:
                         cv2.destroyAllWindows()
-                    return from_square + to_square
-                else:
-                    print("Invalid square format. Restarting detection...")
+                    return move_uci
+                elif confirm == 'retry':
+                    # Reset background models and try again
                     move_fgbg = cv2.createBackgroundSubtractorKNN()
                     motion_fgbg = cv2.createBackgroundSubtractorKNN(history=80)
                     stabilization_frames = 0
@@ -2203,6 +2202,27 @@ def detect_move(pts1, board_basics, timeout=300):
                     if debug_visualization:
                         cv2.destroyAllWindows()
                     return detect_move(pts1, board_basics, timeout)
+                else:
+                    # Let user enter the move manually
+                    print("\nPlease enter your move manually:")
+                    from_square = input("From square (e.g., e2): ").strip().lower()
+                    to_square = input("To square (e.g., e4): ").strip().lower()
+                    
+                    if re.match(r'^[a-h][1-8]$', from_square) and re.match(r'^[a-h][1-8]$', to_square):
+                        if debug_visualization:
+                            cv2.destroyAllWindows()
+                        return from_square + to_square
+                    else:
+                        print("Invalid square format. Restarting detection...")
+                        move_fgbg = cv2.createBackgroundSubtractorKNN()
+                        motion_fgbg = cv2.createBackgroundSubtractorKNN(history=80)
+                        stabilization_frames = 0
+                        is_motion_detected = False
+                        if debug_visualization:
+                            cv2.destroyAllWindows()
+                        return detect_move(pts1, board_basics, timeout)
+            else:
+                return move_uci  
         else:
             logger.warning("Could not identify changed squares. Please try again.")
             is_motion_detected = False
