@@ -4,7 +4,7 @@
     "grip_pw": 2350
   },
   "knight": {
-    "height": 14.0,
+    "height": 16.0,
     "grip_pw": 2450
   },
   "bishop": {
@@ -12,7 +12,7 @@
     "grip_pw": 2400
   },
   "rook": {
-    "height": 21.0,
+    "height": 15.0,
     "grip_pw": 2400
   },
   "queen": {
