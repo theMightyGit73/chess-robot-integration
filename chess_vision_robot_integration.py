@@ -1178,7 +1178,7 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
 
 def process_user_move_improved(pts1, board_basics, printer, verification_enabled=True):
     """Handle the user's move detection, validation, and execution using PrinterController's methods."""
-    global speech, stop_event, debug_visualization
+    global speech, stop_event, debug_visualization, random
     
     update_status("Waiting for your move...", "INFO")
     print("\nYOUR TURN - Make your move on the board")
@@ -1186,7 +1186,20 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
     # Announce turn with speech if available
     if speech:
         try:
-            speech.put_text("Your turn. Please make your move.")
+            # Use enhanced speech system for more varied and engaging prompts
+            turn_message = get_random_response("game_start") if len(printer.chess_game.board.move_stack) < 2 else "Your turn. Please make your move."
+            speech.put_text(turn_message)
+            
+            # If we're a few moves in, maybe add an educational comment
+            if len(printer.chess_game.board.move_stack) > 4 and random.random() < 0.3:
+                # Add a short pause before educational comment
+                time.sleep(0.5)
+                educational_comment = get_educational_comment_for_position(
+                    printer.chess_game.board, 
+                    printer.chess_game.board.fullmove_number
+                )
+                speech.put_text(educational_comment)
+                
         except Exception as e:
             logger.warning(f"Error using speech: {e}")
     
@@ -1218,6 +1231,13 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
                     update_status(f"Move not detected. Please try again. (Attempt {detection_attempts}/{MAX_DETECTION_ATTEMPTS})", "WARNING")
                     print(f"\nMove not detected. Please try again. (Attempt {detection_attempts}/{MAX_DETECTION_ATTEMPTS})")
                 
+                    # Use enhanced speech for failed detection
+                    if speech:
+                        try:
+                            speech.put_text(get_random_response("move_detection_fail"))
+                        except Exception as e:
+                            logger.warning(f"Error using speech: {e}")
+                
         except Exception as detect_err:
             logger.error(f"Error during move detection: {detect_err}")
             logger.debug(traceback.format_exc())
@@ -1228,6 +1248,13 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
     if not user_move_uci:
         logger.warning("Multiple move detection attempts failed")
         update_status("Could not detect your move after multiple attempts", "ERROR")
+        
+        # Enhanced speech for detection failure
+        if speech:
+            try:
+                speech.put_text("I couldn't detect your move after multiple attempts. Let's try manual input.")
+            except Exception as e:
+                logger.warning(f"Error using speech: {e}")
         
         # Ask user to input move manually
         print("\nCould not detect your move after multiple attempts.")
@@ -1272,10 +1299,13 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         logger.warning(f"Invalid move detected: {user_move_uci}")
         update_status("That move isn't legal. Please try again.", "WARNING")
         
-        # Announce invalid move
+        # Announce invalid move with enhanced speech
         if speech:
             try:
-                speech.put_text("That move is not legal. Please try again.")
+                invalid_move_msg = get_random_response("human_mistake")
+                speech.put_text(invalid_move_msg)
+                time.sleep(0.5)
+                speech.put_text("That move isn't legal in the current position. Please try a different move.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
                 
@@ -1293,7 +1323,14 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         # Update move UCI with promotion piece
         user_move_uci = user_move_uci + promotion_piece
         print(f"Promoting to: {get_promotion_piece_name(promotion_piece)}")
-    
+        
+        # Enhanced speech for promotion
+        if speech:
+            try:
+                speech.put_text(f"Pawn promotion! Your pawn is transforming into a {get_promotion_piece_name(promotion_piece)}. Excellent choice.")
+            except Exception as e:
+                logger.warning(f"Error using speech: {e}")
+        
     # Use printer's update_position method
     try:
         # Create the move object
@@ -1322,22 +1359,65 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         # Success - save move and continue
         print(f"\n✓ Move accepted: {from_sq.upper()} → {to_sq.upper()}{' ('+get_promotion_piece_name(promotion_piece)+')' if promotion_piece else ''}")
         
-        # Announce the move with speech
+        # Get move history to identify openings
+        move_history = []
+        for move in printer.chess_game.board.move_stack:
+            from_square = chess.square_name(move.from_square)
+            to_square = chess.square_name(move.to_square)
+            move_history.append(from_square + to_square)
+        
+        # Enhanced speech for move announcement
         if speech:
             try:
-                # Format move announcement text
+                # Format move announcement text with more personality
                 move_text = f"You moved from {from_sq} to {to_sq}"
                 if promotion_piece:
                     move_text += f", promoting to {get_promotion_piece_name(promotion_piece)}"
+                
                 speech.put_text(move_text)
+                
+                # Check if we should announce an opening
+                if 3 <= len(move_history) <= 8:
+                    opening_name = identify_opening(move_history)
+                    if opening_name != "Unknown opening":
+                        time.sleep(0.5)  # Small pause before opening announcement
+                        opening_message = get_random_response("opening_remark", opening_name=opening_name)
+                        speech.put_text(opening_message)
+                
+                # Check if in check or checkmate
+                if printer.chess_game.board.is_check():
+                    time.sleep(0.3)
+                    check_message = explain_check_or_mate(printer.chess_game.board)
+                    speech.put_text(check_message)
+                
+                # Maybe add an educational comment or advice
+                if random.random() < 0.3:  # 30% chance
+                    time.sleep(0.7)  # Slightly longer pause before advice
+                    advice = get_move_advice(printer.chess_game.board, matching_moves[0] if matching_moves else None)
+                    speech.put_text(advice)
+                
+                # Occasionally add a chess quote
+                if random.random() < 0.1:  # 10% chance
+                    time.sleep(1.0)
+                    quote = get_random_chess_quote()
+                    speech.put_text(f"By the way, here's a thought: {quote}")
+                
             except Exception as e:
-                logger.warning(f"Error using speech: {e}")
+                logger.warning(f"Error using enhanced speech: {e}")
                 
         return True
     except Exception as e:
         logger.error(f"Error updating chess position: {e}")
         logger.debug(traceback.format_exc())
         update_status("Error updating chess position", "ERROR")
+        
+        # Enhanced speech for errors
+        if speech:
+            try:
+                speech.put_text(get_random_response("error"))
+            except Exception as speech_e:
+                logger.warning(f"Error using speech for error message: {speech_e}")
+        
         return False
 
 def process_robot_move_improved(printer, verification_enabled=True):
@@ -1345,7 +1425,7 @@ def process_robot_move_improved(printer, verification_enabled=True):
     Handle the robot's move calculation and execution using PrinterChess methods.
     Uses enhanced timeout and directly leverages printer functionality.
     """
-    global speech, stop_event
+    global speech, stop_event, random
     
     update_status("Calculating best move...", "INFO")
     print("\nROBOT'S TURN - Calculating best move...")
@@ -1353,7 +1433,25 @@ def process_robot_move_improved(printer, verification_enabled=True):
     # Announce with speech if available
     if speech:
         try:
-            speech.put_text("My turn. Calculating best move.")
+            # Use enhanced speech system for more varied and engaging prompts
+            import random
+            
+            # If it's the first robot move of the game, use a game_start message
+            if len(printer.chess_game.board.move_stack) <= 1:
+                speech.put_text(get_random_response("game_start"))
+                time.sleep(0.5)
+                speech.put_text("My turn. Calculating best move.")
+            else:
+                speech.put_text("My turn. Calculating best move.")
+                
+                # Occasionally add an educational comment
+                if random.random() < 0.3:  # 30% chance
+                    time.sleep(0.5)
+                    educational_comment = get_educational_comment_for_position(
+                        printer.chess_game.board,
+                        printer.chess_game.board.fullmove_number
+                    )
+                    speech.put_text(educational_comment)
         except Exception as e:
             logger.warning(f"Error using speech: {e}")
     
@@ -1364,14 +1462,20 @@ def process_robot_move_improved(printer, verification_enabled=True):
             winner = "White" if result == "1-0" else "Black" if result == "0-1" else "Draw"
             reason = "Checkmate!" if printer.chess_game.board.is_checkmate() else "Stalemate"
             
+            # Enhanced speech for game over announcements
+            if speech:
+                if printer.chess_game.board.is_checkmate():
+                    if result == "1-0":  # White wins
+                        speech.put_text(get_random_response("checkmate_win"))
+                    else:  # Black wins
+                        speech.put_text(get_random_response("checkmate_lose"))
+                else:  # Draw
+                    speech.put_text(get_random_response("draw"))
+            
             if printer.chess_game.board.is_checkmate():
                 print(f"\nCHECKMATE! {winner} wins!")
-                if speech:
-                    speech.put_text(f"Checkmate! {winner} wins!")
             else:
                 print(f"\nGame over! {winner}")
-                if speech:
-                    speech.put_text(f"Game over! {winner}")
             
             update_status(f"Game over: {reason}", "INFO")
             return True
@@ -1519,20 +1623,57 @@ def process_robot_move_improved(printer, verification_enabled=True):
             print(f"Position evaluation: {get_evaluation_text(score)} ({score:.2f})")
         print("-"*60)
 
-        # Announce the planned move with speech
+        # Enhance speech announcements for robot move
         if speech:
             try:
-                move_text = f"I will move from {source} to {target}"
-                if mate_in:
-                    if mate_in > 0:  # Positive mate = White wins
-                        evaluation_text = f"This will checkmate in {mate_in} moves"
-                    else:  # Negative mate = Black wins
-                        evaluation_text = f"Black will checkmate in {abs(mate_in)} moves"
+                # Get move history to possibly identify openings
+                move_history = []
+                for move in printer.chess_game.board.move_stack:
+                    from_square = chess.square_name(move.from_square)
+                    to_square = chess.square_name(move.to_square)
+                    move_history.append(from_square + to_square)
+                
+                # If it's a particularly good move, add some flair
+                if score > 1.0 or mate_in is not None:
+                    move_message = get_random_response("good_move")
                 else:
-                    evaluation_text = get_evaluation_text(score)
-                speech.put_text(f"{move_text}. {evaluation_text}.")
+                    move_message = f"I'll move from {source} to {target}"
+                
+                speech.put_text(move_message)
+                
+                # If this move gives checkmate or will lead to it very soon
+                if mate_in is not None and mate_in > 0 and mate_in <= 3:
+                    time.sleep(0.3)
+                    if mate_in == 1:
+                        speech.put_text("This move delivers checkmate. Game over!")
+                    else:
+                        speech.put_text(f"This move will lead to checkmate in {mate_in} moves.")
+                
+                # Announce opening if appropriate
+                elif 3 <= len(move_history) <= 8:
+                    opening_name = identify_opening(move_history)
+                    if opening_name != "Unknown opening":
+                        time.sleep(0.5)  # Small pause before opening announcement
+                        opening_message = get_random_response("opening_remark", opening_name=opening_name)
+                        speech.put_text(opening_message)
+                
+                # Provide position analysis occasionally
+                elif random.random() < 0.4:  # 40% chance
+                    time.sleep(0.5)
+                    if score > 1.5:
+                        speech.put_text("I have a significant advantage in this position.")
+                    elif score < -1.5:
+                        speech.put_text("You have a strong position. I'll need to be careful.")
+                    elif abs(score) < 0.5:
+                        speech.put_text("The position is approximately equal. It's a balanced game.")
+                
+                # If check, announce it
+                if printer.chess_game.board.is_check():
+                    time.sleep(0.3)
+                    speech.put_text(get_random_response("in_check"))
             except Exception as e:
-                logger.warning(f"Error using speech: {e}")
+                logger.warning(f"Error using speech for move announcement: {e}")
+                logger.debug(traceback.format_exc())
         
         # Ask for confirmation before executing move
         if verification_enabled:
@@ -1608,9 +1749,12 @@ def process_robot_move_improved(printer, verification_enabled=True):
                 print("Please make this move manually on the board:")
                 print(f"FROM: {source.upper()} TO: {target.upper()}")
                 
-                # Announce error with speech
+                # Announce error with enhanced speech
                 if speech:
                     try:
+                        error_message = get_random_response("error")
+                        speech.put_text(error_message)
+                        time.sleep(0.5)
                         speech.put_text("I was unable to execute the move. Please make it manually.")
                     except Exception as e:
                         logger.warning(f"Error using speech: {e}")
@@ -1635,34 +1779,42 @@ def process_robot_move_improved(printer, verification_enabled=True):
         logger.info(f"Successfully executed move: {best_san}")
         move_to_board_view_position()
         
-        # Check if the move resulted in checkmate or check
-        if '#' in best_san:
-            # This was a checkmate move
-            print("\nCHECKMATE! I win the game.")
-            if speech:
-                try:
-                    speech.put_text("Checkmate! I win the game.")
-                except Exception as e:
-                    logger.warning(f"Error using speech: {e}")
-            
-            # The game is technically over
-            update_status("Game over: Checkmate", "INFO")
-            return True
-        elif '+' in best_san:
-            # This was a check move
-            print("\nCHECK!")
-            if speech:
-                try:
-                    speech.put_text("Check!")
-                except Exception as e:
-                    logger.warning(f"Error using speech: {e}")
-        
-        # Announce move completion
+        # Enhanced speech for special moves and situations
         if speech:
             try:
-                speech.put_text("Move completed. Your turn.")
+                # Check if this was a capture
+                move_obj = printer.chess_game.board.parse_san(best_san)
+                was_capture = printer.chess_game.board.is_capture(move_obj)
+                
+                if was_capture:
+                    # Add a fun comment for captures
+                    capture_comments = [
+                        "I captured your piece!",
+                        "One fewer piece for you to worry about.",
+                        "Capture complete. Your army is getting smaller.",
+                        "That piece has been removed from the battlefield.",
+                        "Captured! My position is improving."
+                    ]
+                    speech.put_text(random.choice(capture_comments))
+                
+                # Check if the move resulted in checkmate or check
+                if '#' in best_san:
+                    # This was a checkmate move
+                    speech.put_text(get_random_response("checkmate_win"))
+                elif '+' in best_san:
+                    # This was a check move
+                    speech.put_text(get_random_response("in_check"))
+                else:
+                    # Normal move completion
+                    speech.put_text("Move completed. Your turn.")
+                    
+                    # Occasionally add a chess quote
+                    if random.random() < 0.1:  # 10% chance
+                        time.sleep(0.7)
+                        quote = get_random_chess_quote()
+                        speech.put_text(f"By the way, here's a thought: {quote}")
             except Exception as e:
-                logger.warning(f"Error using speech: {e}")
+                logger.warning(f"Error using speech for move completion: {e}")
         
         update_status("Move completed. Your turn.", "INFO")
         print("\n✓ Robot move completed successfully")
@@ -1672,6 +1824,15 @@ def process_robot_move_improved(printer, verification_enabled=True):
         logger.error(f"Error handling computer response: {e}")
         logger.debug(traceback.format_exc())
         update_status("Unexpected error in robot move processing", "ERROR")
+        
+        # Enhanced speech for errors
+        if speech:
+            try:
+                speech.put_text(get_random_response("error"))
+                time.sleep(0.5)
+                speech.put_text("I've encountered a problem with my move. Let me try to recover.")
+            except Exception as speech_e:
+                logger.warning(f"Error using speech for error message: {speech_e}")
         
         # Try to recover the board to a safe viewing position
         try:
@@ -1924,7 +2085,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
     motion_fgbg = cv2.createBackgroundSubtractorKNN(history=80, dist2Threshold=400.0, detectShadows=False)
     
     # Increase threshold to reduce false positives
-    motion_threshold = 1.5  # Increased from 0.75 to 1.5
+    motion_threshold = 5  
     
     # Create debug window if visualization is enabled
     if debug_visualization:
@@ -2119,6 +2280,14 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
                     src, tgt = tgt, src
                 else:
                     logger.warning("Move is invalid even when inverted - likely a false detection")
+                    
+                    # Add speech announcement for failed detection even after inversion
+                    if speech:
+                        try:
+                            speech.put_text("I couldn't identify a valid move. Let me try again.")
+                        except Exception as e:
+                            logger.warning(f"Error using speech: {e}")
+                    
                     # Reset background models and try again
                     move_fgbg.apply(frm, learningRate=1.0)
                     motion_fgbg.apply(frm, learningRate=1.0)
@@ -2129,6 +2298,14 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
             # Confirm the move with multiple frames
             if not confirm_move_with_multiple_frames(pts1, board_basics, src, tgt):
                 logger.warning("Move failed multi-frame confirmation")
+                
+                # Add speech announcement for failed confirmation
+                if speech:
+                    try:
+                        speech.put_text("I couldn't confirm your move with enough certainty. Let me try again.")
+                    except Exception as e:
+                        logger.warning(f"Error using speech: {e}")
+                
                 # Reset background models and try again
                 move_fgbg.apply(frm, learningRate=1.0)
                 motion_fgbg.apply(frm, learningRate=1.0)
@@ -2246,7 +2423,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
     
     return None
 
-def wait_until_motion_completes(pts1, motion_fgbg, threshold=1.5, max_wait=30):
+def wait_until_motion_completes(pts1, motion_fgbg, threshold=5, max_wait=30):
     """
     Wait until motion on the board completes
     
@@ -2332,7 +2509,7 @@ def wait_until_motion_completes(pts1, motion_fgbg, threshold=1.5, max_wait=30):
         logger.warning(f"Motion completion detection timed out after {elapsed:.2f} seconds")
         return False
 
-def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, threshold=1.5, max_wait=60):
+def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, threshold=5, max_wait=60):
     """
     Wait for significant and consistent motion on the board
     
@@ -5153,6 +5330,540 @@ def capture_debug_snapshot():
         logger.error(f"Error capturing snapshot: {e}")
         print(f"Error: {e}")
         return False
+
+
+# --------------------------------------------------------------------
+# Enhanced Chess Speech System
+# --------------------------------------------------------------------
+CHESS_OPENINGS = {
+    # White openings (from e4)
+    "e2e4 e7e5 g1f3": "King's Knight Opening",
+    "e2e4 e7e5 f2f4": "King's Gambit",
+    "e2e4 e7e5 f1c4": "Italian Game",
+    "e2e4 c7c5": "Sicilian Defense",
+    "e2e4 e7e6": "French Defense",
+    "e2e4 c7c6": "Caro-Kann Defense",
+    "e2e4 d7d5": "Scandinavian Defense",
+    "e2e4 g8f6": "Alekhine's Defense",
+    "e2e4 d7d6": "Pirc Defense",
+    "e2e4 g7g6": "Modern Defense",
+    
+    # White openings (from d4)
+    "d2d4 d7d5": "Queen's Pawn Game",
+    "d2d4 d7d5 c2c4": "Queen's Gambit",
+    "d2d4 d7d5 c2c4 e7e6 b1c3 f8b4": "Nimzo-Indian Defense",
+    "d2d4 g8f6 c2c4 g7g6": "King's Indian Defense",
+    "d2d4 g8f6 c2c4 e7e6": "Queen's Indian Defense",
+    "d2d4 g8f6 c2c4 c7c5": "Benoni Defense",
+    "d2d4 f7f5": "Dutch Defense",
+    
+    # Other white first moves
+    "c2c4": "English Opening",
+    "g1f3": "Réti Opening",
+    "b1c3": "Van Gent Opening",
+    "f2f4": "Bird's Opening",
+    
+    # Variations with black responses
+    "d2d4 d7d5 c2c4 d5c4": "Queen's Gambit Accepted",
+    "d2d4 d7d5 c2c4 e7e6": "Queen's Gambit Declined",
+    "e2e4 e7e5 g1f3 b8c6 f1b5": "Ruy Lopez (Spanish Game)",
+    "e2e4 e7e5 g1f3 b8c6 f1c4": "Italian Game",
+    "e2e4 e7e5 g1f3 b8c6 d2d4": "Scotch Game",
+    "e2e4 e7e6 d2d4 d7d5": "French Defense, Main Line",
+    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4": "Sicilian Defense, Classical",
+    "e2e4 c7c5 g1f3 b8c6": "Sicilian Defense, Old Sicilian",
+    "e2e4 c7c5 b1c3": "Sicilian Defense, Closed",
+}
+CHESS_TACTICS = {
+    "fork": "A fork is an attack on two or more pieces simultaneously.",
+    "pin": "A pin is when a piece can't move because it would expose a more valuable piece to attack.",
+    "skewer": "A skewer is like a pin in reverse - the more valuable piece is forced to move, exposing a less valuable piece.",
+    "discovered attack": "A discovered attack happens when moving one piece reveals an attack from another piece.",
+    "double check": "A double check is when two pieces check the king simultaneously - very powerful as the king must move.",
+    "zugzwang": "Zugzwang occurs when any move would worsen the position, but passing isn't allowed.",
+    "zwischenzug": "Zwischenzug is an intermediate move that changes the expected continuation.",
+    "overloaded piece": "An overloaded piece is defending too many things at once and can be exploited.",
+    "undermining": "Undermining attacks the defender of a key piece or square.",
+    "deflection": "Deflection forces a piece away from a defensive duty.",
+}
+SPEECH_RESPONSES = {
+    # Game start messages
+    "game_start": [
+        "Let's play chess! I promise not to move the pieces when you're not looking.",
+        "Game on! May the best collection of silicon or carbon atoms win.",
+        "Welcome to chess with a robot. No pressure, but I've been practicing since before I was assembled.",
+        "Chess time! I'll try not to overthink my moves... unlike some humans I know.",
+        "Let's begin! Remember, I don't get tired, hungry, or distracted... but I do occasionally drop pieces."
+    ],
+    
+    # When the robot makes a good move
+    "good_move": [
+        "I'm rather proud of that move, if I do say so myself.",
+        "That's a move my programmer would approve of.",
+        "I calculated approximately 42 million positions to find that one.",
+        "Not to brag, but I think that was a pretty clever move.",
+        "Even a chess grandmaster might have considered that move... eventually."
+    ],
+    
+    # When the human makes a good move
+    "human_good_move": [
+        "Impressive move! You've clearly played before.",
+        "Well played! I didn't see that coming.",
+        "That's a strong move. Are you sure you're not part computer?",
+        "Excellent choice. I'll have to recalculate my strategy.",
+        "That was an unexpectedly good move. My evaluation function is impressed."
+    ],
+    
+    # When the human makes a mistake
+    "human_mistake": [
+        "Interesting choice... I'll try not to take advantage too much.",
+        "I see an opportunity there, but I won't say anything else.",
+        "Are you sure about that move? Just checking...",
+        "That move seems to have some... tactical implications.",
+        "I'll pretend I didn't see that and give you another chance. Just kidding, no takesies-backsies."
+    ],
+    
+    # When in check
+    "in_check": [
+        "Check! Your king is feeling a bit exposed.",
+        "Check! Might want to do something about that.",
+        "Check! Your king is in danger. No pressure.",
+        "Check! Time for some royal protection.",
+        "Check! Don't worry, it's only a threat to your most important piece."
+    ],
+    
+    # Checkmate
+    "checkmate_win": [
+        "Checkmate! Good game, though I had an unfair advantage - I never get distracted.",
+        "Checkmate! Don't feel bad, I was programmed for this.",
+        "Checkmate! That was a good game. Want to play again?",
+        "Checkmate! I'd shake your hand if I had one that wasn't attached to a printer.",
+        "Checkmate! It was a close game... in some parallel universe."
+    ],
+    
+    # Lost to human
+    "checkmate_lose": [
+        "You've checkmated me! Well played, human.",
+        "Checkmate! I bow to your superior strategy... metaphorically speaking.",
+        "You won! I'd blame my programmers, but that would be poor sportsmanship.",
+        "Checkmate! I clearly need more training data.",
+        "You've defeated me! I'm simultaneously disappointed and impressed."
+    ],
+    
+    # Draw
+    "draw": [
+        "It's a draw! Perfect balance, as all things should be.",
+        "Draw! We're evenly matched, it seems.",
+        "It's a tie! Neither machine nor human could prevail today.",
+        "A draw! Let's call it a diplomatic outcome.",
+        "Draw! Perfectly balanced game. Chess would be proud."
+    ],
+    
+    # Opening remarks
+    "opening_remark": [
+        "We're playing the {opening_name}. A classic choice!",
+        "This is the {opening_name}. It leads to interesting tactical positions.",
+        "Ah, the {opening_name}! I've analyzed thousands of games with this opening.",
+        "We've entered a {opening_name}. Good choice for both sides.",
+        "The {opening_name} has appeared on our board. This should be interesting!"
+    ],
+    
+    # Technical difficulties
+    "error": [
+        "I seem to be having a slight technical difficulty. Robot equivalent of stage fright.",
+        "Error detected. Even robots make mistakes sometimes.",
+        "Something unexpected happened. My apologies for the inconvenience.",
+        "I encountered a small issue. Don't worry, I'm still operational.",
+        "Technical hiccup detected. Let me try to recover gracefully."
+    ],
+    
+    # Move detection failures
+    "move_detection_fail": [
+        "I'm having trouble seeing your last move. Could you adjust the pieces to make them clearer?",
+        "My vision sensors are struggling a bit. Could you confirm your move?",
+        "I didn't quite catch that move. Could you make sure the pieces are centered in their squares?",
+        "Move detection failed. Are the pieces properly positioned?",
+        "I'm not seeing your move clearly. Could you make the move more distinct?"
+    ],
+    
+    # Confirmation prompts
+    "confirm": [
+        "I think you moved from {from_sq} to {to_sq}. Is that correct?",
+        "Did you just move {from_sq} to {to_sq}?",
+        "I detected a move from {from_sq} to {to_sq}. Shall I proceed?",
+        "My sensors indicate a move from {from_sq} to {to_sq}. Is this right?",
+        "Is {from_sq} to {to_sq} your intended move?"
+    ],
+}
+EDUCATIONAL_COMMENTS = {
+    "pawn_structure": [
+        "Your pawn structure is creating a strong center. This gives you control over key squares.",
+        "Those connected pawns provide a solid foundation for your position.",
+        "Watch out for isolated pawns. They can become targets for my pieces.",
+        "The pawn chain you've created restricts my piece mobility.",
+        "Central pawn control gives you more options for piece development."
+    ],
+    
+    "piece_development": [
+        "Developing your knights and bishops early is a sound strategic choice.",
+        "Castle early to protect your king and connect your rooks.",
+        "Controlling the center with your pieces creates more attacking possibilities.",
+        "Try to avoid moving the same piece multiple times in the opening.",
+        "Knights before bishops is a common opening principle, as knights have fixed range."
+    ],
+    
+    "king_safety": [
+        "Your king seems exposed. Consider castling to improve safety.",
+        "My pieces are starting to gather near your king's position.",
+        "A good pawn shield can keep your king protected from attacks.",
+        "In the endgame, the king becomes a powerful piece that should be activated.",
+        "Open files leading to your king position can be dangerous."
+    ],
+    
+    "tactics_opportunity": [
+        "There may be a tactical opportunity involving a fork in this position.",
+        "Check for pin possibilities when pieces align this way.",
+        "The alignment of our pieces creates potential for a discovered attack.",
+        "Look for forcing moves like checks and captures to restrict my options.",
+        "When pieces get crowded, tactical opportunities often emerge."
+    ],
+    
+    "endgame_principles": [
+        "In the endgame, passed pawns become extremely valuable.",
+        "Kings should be active in the endgame, unlike in the opening.",
+        "The opposition (kings facing each other with one square between) is a key endgame concept.",
+        "Rook endgames are often drawn even with an extra pawn.",
+        "Try to place your pawns on squares opposite to the color of your bishop."
+    ]
+}
+CHESS_QUOTES = [
+    "Chess is the struggle against error. — Johannes Zukertort",
+    "Every chess master was once a beginner. — Irving Chernev",
+    "Chess is life in miniature. Chess is a struggle, chess battles. — Garry Kasparov",
+    "Chess is the gymnasium of the mind. — Blaise Pascal",
+    "Chess is a sea in which a gnat may drink and an elephant may bathe. — Indian proverb",
+    "Chess is beautiful enough to waste your life for. — Hans Ree",
+    "Chess is a war over the board. The object is to crush the opponent's mind. — Bobby Fischer",
+    "Chess is the art of analysis. — Mikhail Botvinnik",
+    "Chess holds its master in its own bonds, shackling the mind and brain. — Albert Einstein",
+    "Life is like a game of chess, changing with each move. — Chinese proverb",
+    "I don't believe in psychology. I believe in good moves. — Bobby Fischer",
+    "Chess is a forcing house where the fruits of character can ripen more fully than in life. — Edward Morgan Foster",
+    "Chess is as much a mystery as women. — Purdy",
+    "Chess is thirty to forty percent psychology. You don't have this when you play a computer. — Judith Polgar",
+    "Chess is the touchstone of the intellect. — Johann Wolfgang von Goethe"
+]
+def get_random_response(category, **kwargs):
+    """Get a random response from a category, with optional formatting"""
+    if category not in SPEECH_RESPONSES:
+        return f"I don't have a response for {category}"
+    
+    import random
+    response = random.choice(SPEECH_RESPONSES[category])
+    
+    # Apply any formatting
+    if kwargs:
+        try:
+            response = response.format(**kwargs)
+        except KeyError:
+            # If formatting fails, return the response as is
+            pass
+    
+    return response
+
+def get_random_educational_comment(category):
+    """Get a random educational comment about chess"""
+    if category not in EDUCATIONAL_COMMENTS:
+        return get_random_educational_comment("piece_development")
+    
+    import random
+    return random.choice(EDUCATIONAL_COMMENTS[category])
+
+def get_random_chess_quote():
+    """Get a random chess quote"""
+    import random
+    return random.choice(CHESS_QUOTES)
+
+def identify_opening(move_history):
+    """
+    Identify the chess opening based on the move history
+    
+    Args:
+        move_history: List of moves in UCI format (e.g., ["e2e4", "e7e5", ...])
+    
+    Returns:
+        str: Name of the opening, or "Unknown opening" if not recognized
+    """
+    # Convert move history to a string key
+    moves_key = " ".join(move_history)
+    
+    # Try to find the longest matching sequence
+    best_match = None
+    best_match_length = 0
+    
+    for opening_moves, opening_name in CHESS_OPENINGS.items():
+        # Check if the opening moves are a prefix of the moves_key
+        if moves_key.startswith(opening_moves) and len(opening_moves) > best_match_length:
+            best_match = opening_name
+            best_match_length = len(opening_moves)
+    
+    return best_match if best_match else "Unknown opening"
+
+def get_educational_comment_for_position(board, move_number):
+    """
+    Generate an educational comment based on the board position and game stage
+    
+    Args:
+        board: chess.Board object
+        move_number: Current move number
+    
+    Returns:
+        str: Educational comment about the position
+    """
+    # Early game comments (first 10 moves)
+    if move_number <= 10:
+        # Alternate between different types of opening advice
+        if move_number % 3 == 0:
+            return get_random_educational_comment("piece_development")
+        elif move_number % 3 == 1:
+            return get_random_educational_comment("pawn_structure")
+        else:
+            return get_random_educational_comment("king_safety")
+    
+    # Middle game comments (moves 11-30)
+    elif move_number <= 30:
+        # Check for tactical opportunities more frequently
+        if move_number % 2 == 0:
+            return get_random_educational_comment("tactics_opportunity")
+        else:
+            # Alternate between structure and king safety
+            if move_number % 2 == 1:
+                return get_random_educational_comment("pawn_structure")
+            else:
+                return get_random_educational_comment("king_safety")
+    
+    # Endgame comments (after move 30)
+    else:
+        # Focus more on endgame principles
+        if move_number % 3 == 0:
+            return get_random_educational_comment("endgame_principles")
+        elif move_number % 3 == 1:
+            return get_random_educational_comment("king_safety")
+        else:
+            return get_random_educational_comment("tactics_opportunity")
+
+def analyze_move_quality(board, move, engine_eval_before, engine_eval_after):
+    """
+    Analyze the quality of a move based on evaluation change
+    
+    Args:
+        board: chess.Board object before the move
+        move: chess.Move object
+        engine_eval_before: Engine evaluation before move
+        engine_eval_after: Engine evaluation after move
+        
+    Returns:
+        tuple: (quality, comment)
+            quality: 'blunder', 'mistake', 'inaccuracy', 'good', 'excellent'
+            comment: Human-readable explanation
+    """
+    # Evaluation is from white's perspective
+    is_white = board.turn
+    
+    # Convert to the player's perspective
+    eval_before = engine_eval_before if is_white else -engine_eval_before
+    eval_after = engine_eval_after if is_white else -engine_eval_after
+    
+    # Calculate the change in evaluation
+    eval_change = eval_after - eval_before
+    
+    # Classify the move
+    if eval_change <= -2.0:
+        return 'blunder', "That's a significant mistake that gives your opponent a big advantage."
+    elif eval_change <= -1.0:
+        return 'mistake', "That move weakens your position considerably."
+    elif eval_change <= -0.5:
+        return 'inaccuracy', "There was a slightly stronger move available."
+    elif eval_change >= 1.0:
+        return 'excellent', "Excellent move! That significantly improves your position."
+    elif eval_change >= 0.5:
+        return 'good', "Good move! That strengthens your position."
+    else:
+        return 'neutral', "A solid move that maintains the balance."
+
+def explain_check_or_mate(board):
+    """
+    Generate an explanation when the king is in check or checkmate
+    
+    Args:
+        board: chess.Board object
+        
+    Returns:
+        str: Explanation of the check or checkmate
+    """
+    if board.is_checkmate():
+        return "Checkmate! The king is under attack and has no legal moves to escape."
+    
+    if board.is_check():
+        # Count how many pieces are giving check
+        checking_pieces = []
+        for move in board.legal_moves:
+            if board.is_capture(move) and board.piece_at(move.to_square) is not None:
+                attacker_square = move.to_square
+                attacker = board.piece_at(attacker_square)
+                if attacker is not None:
+                    piece_name = piece_to_name(attacker)
+                    from_sq = chess.square_name(attacker_square)
+                    checking_pieces.append(f"{piece_name} at {from_sq}")
+        
+        if len(checking_pieces) > 1:
+            return f"Double check! Your king is under attack from {' and '.join(checking_pieces)}."
+        elif checking_pieces:
+            return f"Check! Your king is under attack from {checking_pieces[0]}."
+        else:
+            return "Check! Your king is under attack."
+    
+    return ""
+
+def piece_to_name(piece):
+    """Convert chess.Piece to readable name"""
+    piece_names = {
+        chess.PAWN: "pawn",
+        chess.KNIGHT: "knight",
+        chess.BISHOP: "bishop",
+        chess.ROOK: "rook",
+        chess.QUEEN: "queen",
+        chess.KING: "king"
+    }
+    return piece_names.get(piece.piece_type, "piece")
+
+def announce_opening(board, move_history, speech):
+    """
+    Announce the opening that has been played
+    
+    Args:
+        board: chess.Board object
+        move_history: List of moves in UCI format
+        speech: Speech system object
+        
+    Returns:
+        None
+    """
+    # Only announce openings in the opening phase (first 6-8 moves)
+    if len(move_history) >= 3 and len(move_history) <= 8:
+        opening_name = identify_opening(move_history)
+        
+        if opening_name != "Unknown opening":
+            try:
+                # Prepare an informative message about the opening
+                opening_message = get_random_response("opening_remark", opening_name=opening_name)
+                
+                # Add an educational comment about the opening
+                opening_extras = {
+                    "King's Gambit": "The King's Gambit is an aggressive opening where White sacrifices a pawn for rapid development.",
+                    "Sicilian Defense": "The Sicilian is Black's most popular response to e4, creating asymmetrical positions with rich tactical play.",
+                    "French Defense": "The French Defense leads to solid but somewhat cramped positions for Black.",
+                    "Queen's Gambit": "In the Queen's Gambit, White offers a pawn to gain central control and development.",
+                    "Ruy Lopez": "Also known as the Spanish Game, the Ruy Lopez is one of the oldest and most respected openings.",
+                    "Italian Game": "The Italian Game focuses on quick development and control of the center.",
+                    "Scotch Game": "The Scotch Game creates open positions with tactical opportunities.",
+                    "English Opening": "The English Opening is flexible and can transpose into many different structures."
+                }
+                
+                if opening_name in opening_extras:
+                    opening_message += " " + opening_extras[opening_name]
+                
+                # Announce via speech system
+                speech.put_text(opening_message)
+                
+                # Log the identification
+                logger.info(f"Opening identified: {opening_name}")
+                return True
+            except Exception as e:
+                logger.warning(f"Error announcing opening: {e}")
+                return False
+    
+    return False
+
+def get_move_advice(board, last_move=None):
+    """
+    Generate advice about the current position or last move
+    
+    Args:
+        board: chess.Board object
+        last_move: The last move made (chess.Move object) or None
+        
+    Returns:
+        str: Advice about the position or move
+    """
+    import random
+    
+    # If in check, explain the check situation
+    if board.is_check():
+        return explain_check_or_mate(board)
+    
+    # Comment on material balance
+    material_balance = evaluate_material(board)
+    if abs(material_balance) >= 3:
+        if material_balance > 0:
+            return "You have a material advantage. Try to simplify the position by trading pieces."
+        else:
+            return "You're down in material. Look for tactical opportunities to equalize."
+    
+    # Comment on king safety if kings are castled on opposite sides
+    white_king_file = chess.square_file(board.king(chess.WHITE))
+    black_king_file = chess.square_file(board.king(chess.BLACK))
+    
+    if abs(white_king_file - black_king_file) >= 4:
+        return "The kings are castled on opposite sides. This often leads to a race of attacks."
+    
+    # General strategic advice
+    advice_options = [
+        "Try to improve the position of your least active piece.",
+        "Look for opportunities to control open files with your rooks.",
+        "Knights work well in closed positions, bishops in open ones.",
+        "Doubled pawns can be a weakness, but they also control important squares.",
+        "The side with more space often has better piece mobility.",
+        "A bishop pair can be a significant advantage in open positions.",
+        "Try to keep your pawn structure intact when possible.",
+        "Look a few moves ahead when considering exchanges.",
+        "In equal positions, it's often better to improve your worst-placed piece.",
+        "Control of the center gives your pieces more mobility and options."
+    ]
+    
+    return random.choice(advice_options)
+
+def evaluate_material(board):
+    """
+    Calculate material balance (positive for white advantage)
+    
+    Args:
+        board: chess.Board object
+        
+    Returns:
+        int: Material balance in pawns (positive = white advantage)
+    """
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # Kings don't count for material
+    }
+    
+    material_balance = 0
+    
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = piece_values[piece.piece_type]
+            if piece.color == chess.WHITE:
+                material_balance += value
+            else:
+                material_balance -= value
+    
+    return material_balance
 
 
 # --------------------------------------------------------------------
