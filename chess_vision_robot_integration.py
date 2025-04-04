@@ -17,6 +17,7 @@ from datetime import datetime
 import platform
 import gc
 import shutil  # For file operations
+import random
 
 # Define directories
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -242,38 +243,77 @@ def init_speech():
             logger.info("Speech is disabled in configuration - skipping initialization")
             return True
         
-        # Create speech thread    
-        speech = Speech_thread()
-        speech.daemon = True
+        # First kill any existing speech instance
+        if speech:
+            try:
+                speech.stop_speaking = True
+                time.sleep(0.5)  # Give time for cleanup
+                speech = None
+                gc.collect()  # Force garbage collection
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up existing speech: {cleanup_error}")
         
-        # Start the speech thread first
-        speech.start()
+        # Create speech thread with retry
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                # Create speech thread    
+                speech = Speech_thread()
+                speech.daemon = True
+                
+                # Start the speech thread first
+                speech.start()
+                
+                # Wait for thread to initialize
+                time.sleep(1.0)
+                
+                if not speech.is_alive():
+                    logger.warning(f"Speech thread failed to start (attempt {attempt+1}/{max_attempts})")
+                    speech = None
+                    gc.collect()
+                    time.sleep(1.0)
+                    continue
+                
+                # Set language if configured
+                language = speech_config.get("language", "en")
+                volume = speech_config.get("volume", 1.0)
+                rate = speech_config.get("rate", 150)
+                
+                # Configure speech properties
+                try:
+                    speech.set_language(language)
+                    speech.set_volume(volume)
+                    speech.set_rate(rate)
+                    logger.info(f"Speech configured: language={language} ({get_language_name(language)}), volume={volume}, rate={rate}")
+                except Exception as config_err:
+                    logger.warning(f"Error configuring speech properties: {config_err}")
+                    # Continue anyway with defaults
+                
+                # Test speech system with timeout protection
+                test_success = False
+                try:
+                    test_timeout = threading.Timer(2.0, lambda: None)
+                    test_timeout.start()
+                    safe_speech("Chess robot system initialized")
+                    test_success = True
+                except Exception as test_err:
+                    logger.warning(f"Speech test failed: {test_err}")
+                
+                # Start the speech monitor
+                if not stop_event.is_set():
+                    threading.Timer(30.0, monitor_speech_health).start()
+                    logger.info("Speech health monitor started")
+                
+                logger.info("Speech system initialized successfully")
+                return True
+            except Exception as attempt_err:
+                logger.warning(f"Speech initialization attempt {attempt+1} failed: {attempt_err}")
+                speech = None
+                gc.collect()
+                time.sleep(1.0)
         
-        # Wait a moment for thread to initialize
-        time.sleep(1.0)
-        
-        # Set language if configured
-        language = speech_config.get("language", "en")
-        volume = speech_config.get("volume", 1.0)
-        rate = speech_config.get("rate", 150)
-        
-        # Configure speech properties
-        try:
-            speech.set_language(language)
-            speech.set_volume(volume)
-            speech.set_rate(rate)
-            logger.info(f"Speech configured: language={language} ({get_language_name(language)}), volume={volume}, rate={rate}")
-        except Exception as config_err:
-            logger.warning(f"Error configuring speech properties: {config_err}")
-            # Continue anyway with defaults
-        
-        # Test speech system
-        test_timeout = threading.Timer(2.0, lambda: None)
-        test_timeout.start()
-        speech.put_text("Chess robot system initialized")
-        
-        logger.info("Speech system initialized")
-        return True
+        logger.error("Speech initialization failed after multiple attempts")
+        return False
     except Exception as e:
         logger.error(f"Speech initialization failed: {e}")
         logger.debug(traceback.format_exc())
@@ -553,7 +593,16 @@ def cleanup_resources():
     # Stop speech
     if speech:
         try:
+            # More robust speech cleanup
+            logger.info("Stopping speech system...")
             speech.stop_speaking = True
+            
+            # Wait briefly for speech to stop
+            for _ in range(5):  # Wait up to 0.5 seconds
+                if not speech.is_alive():
+                    break
+                time.sleep(0.1)
+                
             logger.info("Speech resources released")
         except Exception as e:
             logger.error(f"Error stopping speech: {e}")
@@ -732,9 +781,12 @@ def check_camera_stability():
  
 def status_monitor():
     """Thread to monitor and display system status"""
-    global status_queue, running
+    global status_queue, running, speech
     
     logger.info("Status monitor thread started")
+    
+    # Track last speech check time
+    last_speech_check = time.time()
     
     while running:
         try:
@@ -750,6 +802,24 @@ def status_monitor():
             if not running:
                 break
                 
+            # Check speech system health every 10 seconds
+            current_time = time.time()
+            if speech and (current_time - last_speech_check >= 10):
+                try:
+                    speech_status = "OK" if speech.is_alive() else "DEAD"
+                    queue_size = speech.get_queue_size() if hasattr(speech, "get_queue_size") else "unknown"
+                    logger.debug(f"Speech system status: {speech_status}, Queue: {queue_size}")
+                    
+                    # Auto-restart if found dead
+                    if speech_status == "DEAD" and not stop_event.is_set():
+                        logger.warning("Speech thread found dead during status check - restarting")
+                        monitor_speech_health()  # Immediate health check will restart it
+                except Exception as speech_check_err:
+                    logger.warning(f"Error checking speech status: {speech_check_err}")
+                
+                # Update last check time
+                last_speech_check = current_time
+                
             time.sleep(0.1)
             
         except Exception as e:
@@ -758,6 +828,161 @@ def status_monitor():
     
     logger.info("Status monitor thread stopped")
 
+def monitor_speech_health():
+    """Periodically check speech thread health and restart if needed"""
+    global speech, config, stop_event
+    
+    logger.debug("Running speech health check")
+    
+    # Exit if stop event is set
+    if stop_event.is_set():
+        return
+    
+    try:
+        # Check if speech thread exists and is dead
+        if speech is not None and not speech.is_alive():
+            logger.warning("Speech thread has died - attempting to restart")
+            try:
+                # Save current settings if available
+                settings = {}
+                try:
+                    if hasattr(speech, "current_language"):
+                        settings["language"] = speech.current_language
+                    if hasattr(speech, "current_volume"):
+                        settings["volume"] = speech.current_volume
+                    if hasattr(speech, "current_rate"):
+                        settings["rate"] = speech.current_rate
+                except:
+                    # Use config settings as fallback
+                    speech_config = config.get("speech", {})
+                    settings["language"] = speech_config.get("language", "en")
+                    settings["volume"] = speech_config.get("volume", 1.0)
+                    settings["rate"] = speech_config.get("rate", 150)
+                
+                # Force cleanup of old speech object
+                try:
+                    speech.stop_speaking = True
+                    time.sleep(0.5)  # Allow time for cleanup
+                except:
+                    pass
+                
+                speech = None
+                gc.collect()  # Force garbage collection
+                
+                # Create new speech thread
+                speech = Speech_thread()
+                speech.daemon = True
+                speech.start()
+                
+                # Wait a moment for initialization
+                time.sleep(1.0)
+                
+                # Restore settings
+                try:
+                    speech.set_language(settings.get("language", "en"))
+                    speech.set_volume(settings.get("volume", 1.0))
+                    speech.set_rate(settings.get("rate", 150))
+                except Exception as setting_err:
+                    logger.warning(f"Could not restore speech settings: {setting_err}")
+                
+                logger.info("Speech thread successfully restarted")
+                
+                # Test with a quiet notification
+                try:
+                    safe_speech("Speech system restored", volume=0.8)
+                except:
+                    pass
+            except Exception as restart_err:
+                logger.error(f"Failed to restart speech thread: {restart_err}")
+                logger.debug(traceback.format_exc())
+        
+        # Schedule next health check (every 30 seconds)
+        if not stop_event.is_set():
+            threading.Timer(30.0, monitor_speech_health).start()
+            
+    except Exception as e:
+        logger.error(f"Error in speech monitor: {e}")
+        # Ensure we reschedule even if there's an error
+        if not stop_event.is_set():
+            threading.Timer(30.0, monitor_speech_health).start()
+
+def safe_speech(text, priority=False, volume=None, timeout=0.5):
+    """
+    Safely add text to speech queue with timeout and error handling
+    
+    Args:
+        text: Text to speak
+        priority: Whether this is a priority message
+        volume: Optional volume override (0.0-1.0)
+        timeout: Timeout in seconds for queue operation
+        
+    Returns:
+        bool: True if operation was successful
+    """
+    global speech
+    
+    if not speech:
+        logger.warning("Cannot speak - speech system not initialized")
+        return False
+        
+    if not text:
+        return True  # Nothing to say
+        
+    try:
+        # Check if thread is alive
+        if not speech.is_alive():
+            logger.warning("Speech thread is dead - message will not be spoken")
+            return False
+            
+        # Use a threading event for timeout
+        done_event = threading.Event()
+        success = [False]  # Use list for mutable reference
+        
+        def add_to_queue():
+            try:
+                # Handle different speech API versions
+                if volume is not None:
+                    # Try both parameter versions
+                    try:
+                        if hasattr(speech.put_text, "__code__") and "volume" in speech.put_text.__code__.co_varnames:
+                            speech.put_text(text, volume=volume)
+                        else:
+                            # Fall back to setting volume before speaking
+                            orig_volume = speech.get_volume() if hasattr(speech, "get_volume") else None
+                            speech.set_volume(volume)
+                            speech.put_text(text)
+                            # Restore original volume if needed
+                            if orig_volume is not None:
+                                speech.set_volume(orig_volume)
+                    except Exception as volume_err:
+                        logger.warning(f"Error using volume parameter: {volume_err}")
+                        speech.put_text(text)  # Try without volume
+                else:
+                    speech.put_text(text)
+                    
+                success[0] = True
+                
+            except Exception as e:
+                logger.warning(f"Error adding text to speech queue: {e}")
+                success[0] = False
+            finally:
+                done_event.set()
+        
+        # Run in separate thread with timeout
+        thread = threading.Thread(target=add_to_queue)
+        thread.daemon = True
+        thread.start()
+        
+        # Wait with timeout
+        if done_event.wait(timeout):
+            return success[0]
+        else:
+            logger.warning(f"Timeout adding text to speech queue: '{text[:20]}...'")
+            return False
+            
+    except Exception as e:
+        logger.warning(f"Failed to speak text: {e}")
+        return False
 
 # --------------------------------------------------------------------
 # Chess Game Control
@@ -905,9 +1130,9 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
         if speech:
             try:
                 if player_is_white:
-                    speech.put_text(f"Welcome to Chess Robot! I'm ready to play. You are white, and you go first.")
+                    safe_speech(f"Welcome to Chess Robot! I'm ready to play. You are white, and you go first.")
                 else:
-                    speech.put_text(f"Welcome to Chess Robot! I'm ready to play. You are black. I'll make the first move.")
+                    safe_speech(f"Welcome to Chess Robot! I'm ready to play. You are black. I'll make the first move.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
     except Exception as e:
@@ -929,9 +1154,9 @@ def play_game(pts1, board_basics, player_is_white=True, difficulty="Intermediate
     if speech:
         try:
             if player_is_white:
-                speech.put_text("Game started. Please make your move.")
+                safe_speech("Game started. Please make your move.")
             else:
-                speech.put_text("Game started. I'll make the first move. Please wait.")
+                safe_speech("Game started. I'll make the first move. Please wait.")
         except Exception as e:
             logger.warning(f"Error using speech: {e}")
             logger.debug(traceback.format_exc())
@@ -1188,7 +1413,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         try:
             # Use enhanced speech system for more varied and engaging prompts
             turn_message = get_random_response("game_start") if len(printer.chess_game.board.move_stack) < 2 else "Your turn. Please make your move."
-            speech.put_text(turn_message)
+            safe_speech(turn_message)
             
             # If we're a few moves in, maybe add an educational comment
             if len(printer.chess_game.board.move_stack) > 4 and random.random() < 0.3:
@@ -1198,7 +1423,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
                     printer.chess_game.board, 
                     printer.chess_game.board.fullmove_number
                 )
-                speech.put_text(educational_comment)
+                safe_speech(educational_comment)
                 
         except Exception as e:
             logger.warning(f"Error using speech: {e}")
@@ -1234,7 +1459,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
                     # Use enhanced speech for failed detection
                     if speech:
                         try:
-                            speech.put_text(get_random_response("move_detection_fail"))
+                            safe_speech(get_random_response("move_detection_fail"))
                         except Exception as e:
                             logger.warning(f"Error using speech: {e}")
                 
@@ -1252,7 +1477,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         # Enhanced speech for detection failure
         if speech:
             try:
-                speech.put_text("I couldn't detect your move after multiple attempts. Let's try manual input.")
+                safe_speech("I couldn't detect your move after multiple attempts. Let's try manual input.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
         
@@ -1303,9 +1528,9 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         if speech:
             try:
                 invalid_move_msg = get_random_response("human_mistake")
-                speech.put_text(invalid_move_msg)
+                safe_speech(invalid_move_msg)
                 time.sleep(0.5)
-                speech.put_text("That move isn't legal in the current position. Please try a different move.")
+                safe_speech("That move isn't legal in the current position. Please try a different move.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
                 
@@ -1327,7 +1552,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         # Enhanced speech for promotion
         if speech:
             try:
-                speech.put_text(f"Pawn promotion! Your pawn is transforming into a {get_promotion_piece_name(promotion_piece)}. Excellent choice.")
+                safe_speech(f"Pawn promotion! Your pawn is transforming into a {get_promotion_piece_name(promotion_piece)}. Excellent choice.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
         
@@ -1374,7 +1599,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
                 if promotion_piece:
                     move_text += f", promoting to {get_promotion_piece_name(promotion_piece)}"
                 
-                speech.put_text(move_text)
+                safe_speech(move_text)
                 
                 # Check if we should announce an opening
                 if 3 <= len(move_history) <= 8:
@@ -1382,25 +1607,25 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
                     if opening_name != "Unknown opening":
                         time.sleep(0.5)  # Small pause before opening announcement
                         opening_message = get_random_response("opening_remark", opening_name=opening_name)
-                        speech.put_text(opening_message)
+                        safe_speech(opening_message)
                 
                 # Check if in check or checkmate
                 if printer.chess_game.board.is_check():
                     time.sleep(0.3)
                     check_message = explain_check_or_mate(printer.chess_game.board)
-                    speech.put_text(check_message)
+                    safe_speech(check_message)
                 
                 # Maybe add an educational comment or advice
                 if random.random() < 0.3:  # 30% chance
                     time.sleep(0.7)  # Slightly longer pause before advice
                     advice = get_move_advice(printer.chess_game.board, matching_moves[0] if matching_moves else None)
-                    speech.put_text(advice)
+                    safe_speech(advice)
                 
                 # Occasionally add a chess quote
                 if random.random() < 0.1:  # 10% chance
                     time.sleep(1.0)
                     quote = get_random_chess_quote()
-                    speech.put_text(f"By the way, here's a thought: {quote}")
+                    safe_speech(f"By the way, here's a thought: {quote}")
                 
             except Exception as e:
                 logger.warning(f"Error using enhanced speech: {e}")
@@ -1414,7 +1639,7 @@ def process_user_move_improved(pts1, board_basics, printer, verification_enabled
         # Enhanced speech for errors
         if speech:
             try:
-                speech.put_text(get_random_response("error"))
+                safe_speech(get_random_response("error"))
             except Exception as speech_e:
                 logger.warning(f"Error using speech for error message: {speech_e}")
         
@@ -1433,16 +1658,14 @@ def process_robot_move_improved(printer, verification_enabled=True):
     # Announce with speech if available
     if speech:
         try:
-            # Use enhanced speech system for more varied and engaging prompts
-            import random
             
             # If it's the first robot move of the game, use a game_start message
             if len(printer.chess_game.board.move_stack) <= 1:
-                speech.put_text(get_random_response("game_start"))
+                safe_speech(get_random_response("game_start"))
                 time.sleep(0.5)
-                speech.put_text("My turn. Calculating best move.")
+                safe_speech("My turn. Calculating best move.")
             else:
-                speech.put_text("My turn. Calculating best move.")
+                safe_speech("My turn. Calculating best move.")
                 
                 # Occasionally add an educational comment
                 if random.random() < 0.3:  # 30% chance
@@ -1451,7 +1674,7 @@ def process_robot_move_improved(printer, verification_enabled=True):
                         printer.chess_game.board,
                         printer.chess_game.board.fullmove_number
                     )
-                    speech.put_text(educational_comment)
+                    safe_speech(educational_comment)
         except Exception as e:
             logger.warning(f"Error using speech: {e}")
     
@@ -1466,11 +1689,11 @@ def process_robot_move_improved(printer, verification_enabled=True):
             if speech:
                 if printer.chess_game.board.is_checkmate():
                     if result == "1-0":  # White wins
-                        speech.put_text(get_random_response("checkmate_win"))
+                        safe_speech(get_random_response("checkmate_win"))
                     else:  # Black wins
-                        speech.put_text(get_random_response("checkmate_lose"))
+                        safe_speech(get_random_response("checkmate_lose"))
                 else:  # Draw
-                    speech.put_text(get_random_response("draw"))
+                    safe_speech(get_random_response("draw"))
             
             if printer.chess_game.board.is_checkmate():
                 print(f"\nCHECKMATE! {winner} wins!")
@@ -1639,15 +1862,15 @@ def process_robot_move_improved(printer, verification_enabled=True):
                 else:
                     move_message = f"I'll move from {source} to {target}"
                 
-                speech.put_text(move_message)
+                safe_speech(move_message)
                 
                 # If this move gives checkmate or will lead to it very soon
                 if mate_in is not None and mate_in > 0 and mate_in <= 3:
                     time.sleep(0.3)
                     if mate_in == 1:
-                        speech.put_text("This move delivers checkmate. Game over!")
+                        safe_speech("This move delivers checkmate. Game over!")
                     else:
-                        speech.put_text(f"This move will lead to checkmate in {mate_in} moves.")
+                        safe_speech(f"This move will lead to checkmate in {mate_in} moves.")
                 
                 # Announce opening if appropriate
                 elif 3 <= len(move_history) <= 8:
@@ -1655,22 +1878,22 @@ def process_robot_move_improved(printer, verification_enabled=True):
                     if opening_name != "Unknown opening":
                         time.sleep(0.5)  # Small pause before opening announcement
                         opening_message = get_random_response("opening_remark", opening_name=opening_name)
-                        speech.put_text(opening_message)
+                        safe_speech(opening_message)
                 
                 # Provide position analysis occasionally
                 elif random.random() < 0.4:  # 40% chance
                     time.sleep(0.5)
                     if score > 1.5:
-                        speech.put_text("I have a significant advantage in this position.")
+                        safe_speech("I have a significant advantage in this position.")
                     elif score < -1.5:
-                        speech.put_text("You have a strong position. I'll need to be careful.")
+                        safe_speech("You have a strong position. I'll need to be careful.")
                     elif abs(score) < 0.5:
-                        speech.put_text("The position is approximately equal. It's a balanced game.")
+                        safe_speech("The position is approximately equal. It's a balanced game.")
                 
                 # If check, announce it
                 if printer.chess_game.board.is_check():
                     time.sleep(0.3)
-                    speech.put_text(get_random_response("in_check"))
+                    safe_speech(get_random_response("in_check"))
             except Exception as e:
                 logger.warning(f"Error using speech for move announcement: {e}")
                 logger.debug(traceback.format_exc())
@@ -1694,7 +1917,7 @@ def process_robot_move_improved(printer, verification_enabled=True):
         # Announce move execution with speech
         if speech:
             try:
-                speech.put_text("Executing move now. Please wait.")
+                safe_speech("Executing move now. Please wait.")
             except Exception as e:
                 logger.warning(f"Error using speech: {e}")
         
@@ -1753,9 +1976,9 @@ def process_robot_move_improved(printer, verification_enabled=True):
                 if speech:
                     try:
                         error_message = get_random_response("error")
-                        speech.put_text(error_message)
+                        safe_speech(error_message)
                         time.sleep(0.5)
-                        speech.put_text("I was unable to execute the move. Please make it manually.")
+                        safe_speech("I was unable to execute the move. Please make it manually.")
                     except Exception as e:
                         logger.warning(f"Error using speech: {e}")
                 
@@ -1779,42 +2002,82 @@ def process_robot_move_improved(printer, verification_enabled=True):
         logger.info(f"Successfully executed move: {best_san}")
         move_to_board_view_position()
         
-        # Enhanced speech for special moves and situations
+        # IMPROVED SECTION: Enhanced speech for special moves and situations 
         if speech:
             try:
-                # Check if this was a capture
-                move_obj = printer.chess_game.board.parse_san(best_san)
-                was_capture = printer.chess_game.board.is_capture(move_obj)
+                # Get the current board state AFTER the move was executed
+                current_board_fen = printer.chess_game.board.fen()
                 
-                if was_capture:
-                    # Add a fun comment for captures
-                    capture_comments = [
-                        "I captured your piece!",
-                        "One fewer piece for you to worry about.",
-                        "Capture complete. Your army is getting smaller.",
-                        "That piece has been removed from the battlefield.",
-                        "Captured! My position is improving."
-                    ]
-                    speech.put_text(random.choice(capture_comments))
+                # Parse the move using UCI coordinates instead of SAN notation
+                from_square = chess.parse_square(source)
+                to_square = chess.parse_square(target)
                 
-                # Check if the move resulted in checkmate or check
-                if '#' in best_san:
-                    # This was a checkmate move
-                    speech.put_text(get_random_response("checkmate_win"))
-                elif '+' in best_san:
-                    # This was a check move
-                    speech.put_text(get_random_response("in_check"))
-                else:
-                    # Normal move completion
-                    speech.put_text("Move completed. Your turn.")
+                # Create a temporary board but undo the last move to analyze it properly
+                temp_board = chess.Board(current_board_fen)
+                
+                # We need to step back one move to analyze the effect of the move
+                # Get the move that was just made
+                if len(printer.chess_game.board.move_stack) > 0:
+                    last_move = printer.chess_game.board.move_stack[-1]
                     
-                    # Occasionally add a chess quote
-                    if random.random() < 0.1:  # 10% chance
-                        time.sleep(0.7)
-                        quote = get_random_chess_quote()
-                        speech.put_text(f"By the way, here's a thought: {quote}")
+                    # Create a board without this last move
+                    temp_board = chess.Board(printer.chess_game.board.fen())
+                    temp_board.pop()  # Remove the last move
+                    
+                    # Now we can check if the move was a capture by looking at the target square
+                    was_capture = temp_board.piece_at(to_square) is not None
+                    
+                    # Create the move object
+                    move_obj = chess.Move(from_square, to_square)
+                    
+                    # Apply the move to our temporary board
+                    temp_board.push(move_obj)
+                    
+                    # Now we can check the effects of the move
+                    is_check = temp_board.is_check()
+                    is_checkmate = temp_board.is_checkmate()
+                    
+                    # Generate appropriate speech based on move properties
+                    if was_capture:
+                        # Add a fun comment for captures
+                        capture_comments = [
+                            "I captured your piece!",
+                            "One fewer piece for you to worry about.",
+                            "Capture complete. Your army is getting smaller.",
+                            "That piece has been removed from the battlefield.",
+                            "Captured! My position is improving."
+                        ]
+                        safe_speech(random.choice(capture_comments))
+                    
+                    # Check if the move resulted in checkmate or check
+                    if is_checkmate:
+                        # This was a checkmate move
+                        safe_speech(get_random_response("checkmate_win"))
+                    elif is_check:
+                        # This was a check move
+                        safe_speech(get_random_response("in_check"))
+                    else:
+                        # Normal move completion
+                        safe_speech("Move completed. Your turn.")
+                        
+                        # Occasionally add a chess quote
+                        if random.random() < 0.1:  # 10% chance
+                            time.sleep(0.7)
+                            quote = get_random_chess_quote()
+                            safe_speech(f"By the way, here's a thought: {quote}")
+                else:
+                    # Simple fallback that doesn't rely on move analysis
+                    safe_speech(f"I moved from {source} to {target}. Your turn.")
             except Exception as e:
+                # If the enhanced speech analysis fails, fall back to a simple announcement
                 logger.warning(f"Error using speech for move completion: {e}")
+                logger.debug(traceback.format_exc())
+                
+                try:
+                    # Simple fallback that doesn't rely on move analysis
+                    safe_speech(f"I moved from {source} to {target}. Your turn.")
+                except Exception as speech_e:
+                    logger.warning(f"Error using fallback speech: {speech_e}")
         
         update_status("Move completed. Your turn.", "INFO")
         print("\n✓ Robot move completed successfully")
@@ -1828,9 +2091,9 @@ def process_robot_move_improved(printer, verification_enabled=True):
         # Enhanced speech for errors
         if speech:
             try:
-                speech.put_text(get_random_response("error"))
+                safe_speech(get_random_response("error"))
                 time.sleep(0.5)
-                speech.put_text("I've encountered a problem with my move. Let me try to recover.")
+                safe_speech("I've encountered a problem with my move. Let me try to recover.")
             except Exception as speech_e:
                 logger.warning(f"Error using speech for error message: {speech_e}")
         
@@ -1979,7 +2242,7 @@ def announce_game_result(printer, speech):
         # Announce with speech if available
         if speech:
             try:
-                speech.put_text(result_text + reason)
+                safe_speech(result_text + reason)
             except Exception as e:
                 result_logger.warning(f"Error using speech: {e}")
     except Exception as e:
@@ -2058,7 +2321,7 @@ def end_game_cleanup(printer, speech, announce_result=True):
     # Final status announcement
     try:
         if speech:
-            speech.put_text("Game completed. Thank you for playing.")
+            safe_speech("Game completed. Thank you for playing.")
     except Exception as e:
         cleanup_logger.warning(f"Error in final speech announcement: {e}")
     
@@ -2085,7 +2348,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
     motion_fgbg = cv2.createBackgroundSubtractorKNN(history=80, dist2Threshold=400.0, detectShadows=False)
     
     # Increase threshold to reduce false positives
-    motion_threshold = 5  
+    motion_threshold = 4  
     
     # Create debug window if visualization is enabled
     if debug_visualization:
@@ -2284,7 +2547,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
                     # Add speech announcement for failed detection even after inversion
                     if speech:
                         try:
-                            speech.put_text("I couldn't identify a valid move. Let me try again.")
+                            safe_speech("I couldn't identify a valid move. Let me try again.")
                         except Exception as e:
                             logger.warning(f"Error using speech: {e}")
                     
@@ -2302,7 +2565,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
                 # Add speech announcement for failed confirmation
                 if speech:
                     try:
-                        speech.put_text("I couldn't confirm your move with enough certainty. Let me try again.")
+                        safe_speech("I couldn't confirm your move with enough certainty. Let me try again.")
                     except Exception as e:
                         logger.warning(f"Error using speech: {e}")
                 
@@ -2361,7 +2624,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
             if verification_enabled:
                 if speech:
                     try:
-                        speech.put_text(f"I think I detected a move from {src} to {tgt}, but I'm not certain. Please confirm.")
+                        safe_speech(f"I think I detected a move from {src} to {tgt}, but I'm not certain. Please confirm.")
                     except Exception as e:
                         logger.warning(f"Error using speech: {e}")
                 confirm = input("Is this correct? (y/n/retry): ").strip().lower()
@@ -2423,7 +2686,7 @@ def detect_move(pts1, board_basics, timeout=300, verification_enabled=True):
     
     return None
 
-def wait_until_motion_completes(pts1, motion_fgbg, threshold=5, max_wait=30):
+def wait_until_motion_completes(pts1, motion_fgbg, threshold=4, max_wait=30):
     """
     Wait until motion on the board completes
     
@@ -2509,7 +2772,7 @@ def wait_until_motion_completes(pts1, motion_fgbg, threshold=5, max_wait=30):
         logger.warning(f"Motion completion detection timed out after {elapsed:.2f} seconds")
         return False
 
-def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, threshold=5, max_wait=60):
+def wait_for_significant_motion(pts1, motion_fgbg, board_basics, chess_game, threshold=4, max_wait=60):
     """
     Wait for significant and consistent motion on the board
     
@@ -3794,7 +4057,7 @@ def handle_game_ending_transition(printer, speech, player_is_white):
         # Speech announcement if available
         if speech:
             try:
-                speech.put_text("Game completed. Returning to home position.")
+                safe_speech("Game completed. Returning to home position.")
             except Exception as e:
                 logger.warning(f"Error using speech during end transition: {e}")
                 
@@ -3862,7 +4125,7 @@ def handle_game_ending_transition(printer, speech, player_is_white):
                 else:
                     winner_message = "The game was a draw."
                 
-                speech.put_text(f"Game over. {winner_message} Ready to return to the main menu.")
+                safe_speech(f"Game over. {winner_message} Ready to return to the main menu.")
             except Exception as e:
                 logger.warning(f"Error in final game announcement: {e}")
                 
@@ -4406,7 +4669,7 @@ def configure_speech_settings():
             
         # Test the new settings
         print("\nTesting new speech settings...")
-        speech.put_text(f"This is a test. Language is now set to {get_language_name(new_lang)}")
+        safe_speech(f"This is a test. Language is now set to {get_language_name(new_lang)}")
         
         logger.info(f"Speech settings updated: language={new_lang}, volume={new_volume}, rate={new_rate}")
         print("\nSpeech settings updated successfully!")
@@ -4639,7 +4902,7 @@ def test_speech():
         print(f"Message: \"{message}\"")
         
         # Send to speech system
-        speech.put_text(message)
+        safe_speech(message)
         
         print("\nSpeech test completed.")
         return True
@@ -5558,7 +5821,6 @@ def get_random_response(category, **kwargs):
     if category not in SPEECH_RESPONSES:
         return f"I don't have a response for {category}"
     
-    import random
     response = random.choice(SPEECH_RESPONSES[category])
     
     # Apply any formatting
@@ -5576,12 +5838,10 @@ def get_random_educational_comment(category):
     if category not in EDUCATIONAL_COMMENTS:
         return get_random_educational_comment("piece_development")
     
-    import random
     return random.choice(EDUCATIONAL_COMMENTS[category])
 
 def get_random_chess_quote():
     """Get a random chess quote"""
-    import random
     return random.choice(CHESS_QUOTES)
 
 def identify_opening(move_history):
@@ -5774,7 +6034,7 @@ def announce_opening(board, move_history, speech):
                     opening_message += " " + opening_extras[opening_name]
                 
                 # Announce via speech system
-                speech.put_text(opening_message)
+                safe_speech(opening_message)
                 
                 # Log the identification
                 logger.info(f"Opening identified: {opening_name}")
@@ -5796,7 +6056,6 @@ def get_move_advice(board, last_move=None):
     Returns:
         str: Advice about the position or move
     """
-    import random
     
     # If in check, explain the check situation
     if board.is_check():
