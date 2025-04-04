@@ -44,7 +44,7 @@ class PrinterConfig:
     
     # Servo positions (150° to 175° range)
     gripper_open_pw: int = 2200  # ~150° (fully open)
-    gripper_closed_pw: int = 2450  # ~175° (fully closed)
+    gripper_closed_pw: int = 2500  # ~180° (fully closed)
     
     # Movement settings
     gripper_step: int = 5  # µs step per iteration
