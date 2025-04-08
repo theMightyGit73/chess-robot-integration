@@ -2009,75 +2009,92 @@ def process_robot_move_improved(printer, verification_enabled=True):
                 current_board_fen = printer.chess_game.board.fen()
                 
                 # Parse the move using UCI coordinates instead of SAN notation
-                from_square = chess.parse_square(source)
-                to_square = chess.parse_square(target)
+                try:
+                    from_square = chess.parse_square(source)
+                    to_square = chess.parse_square(target)
+                except (ValueError, TypeError):
+                    # Fallback if parsing fails
+                    safe_speech(f"I made my move. Your turn.")
+                    return True
                 
-                # Create a temporary board but undo the last move to analyze it properly
-                temp_board = chess.Board(current_board_fen)
-                
-                # We need to step back one move to analyze the effect of the move
-                # Get the move that was just made
-                if len(printer.chess_game.board.move_stack) > 0:
+                # First check if there are any moves in the move stack
+                if not printer.chess_game.board.move_stack:
+                    # No moves to analyze, use simple announcement
+                    safe_speech(f"I moved from {source} to {target}. Your turn.")
+                    return True
+                    
+                # Get the last move safely
+                try:
                     last_move = printer.chess_game.board.move_stack[-1]
+                except IndexError:
+                    # Fallback if no moves in stack
+                    safe_speech(f"I moved from {source} to {target}. Your turn.")
+                    return True
                     
-                    # Create a board without this last move
-                    temp_board = chess.Board(printer.chess_game.board.fen())
-                    temp_board.pop()  # Remove the last move
+                # Use the actual is_capture method instead of creating temporary boards
+                try:
+                    was_capture = printer.chess_game.board.is_capture(last_move)
+                    is_check = printer.chess_game.board.is_check()
+                    is_checkmate = printer.chess_game.board.is_checkmate()
+                except Exception:
+                    # Fallback if move analysis fails
+                    safe_speech(f"I moved from {source} to {target}. Your turn.")
+                    return True
                     
-                    # Now we can check if the move was a capture by looking at the target square
-                    was_capture = temp_board.piece_at(to_square) is not None
-                    
-                    # Create the move object
-                    move_obj = chess.Move(from_square, to_square)
-                    
-                    # Apply the move to our temporary board
-                    temp_board.push(move_obj)
-                    
-                    # Now we can check the effects of the move
-                    is_check = temp_board.is_check()
-                    is_checkmate = temp_board.is_checkmate()
-                    
-                    # Generate appropriate speech based on move properties
-                    if was_capture:
-                        # Add a fun comment for captures
-                        capture_comments = [
-                            "I captured your piece!",
-                            "One fewer piece for you to worry about.",
-                            "Capture complete. Your army is getting smaller.",
-                            "That piece has been removed from the battlefield.",
-                            "Captured! My position is improving."
-                        ]
+                # Generate appropriate speech based on move properties
+                if was_capture:
+                    # Add a fun comment for captures - with safety check
+                    capture_comments = [
+                        "I captured your piece!",
+                        "One fewer piece for you to worry about.",
+                        "Capture complete. Your army is getting smaller.",
+                        "That piece has been removed from the battlefield.",
+                        "Captured! My position is improving."
+                    ]
+                    if capture_comments:  # Make sure the list isn't empty
                         safe_speech(random.choice(capture_comments))
-                    
-                    # Check if the move resulted in checkmate or check
-                    if is_checkmate:
-                        # This was a checkmate move
-                        safe_speech(get_random_response("checkmate_win"))
-                    elif is_check:
-                        # This was a check move
-                        safe_speech(get_random_response("in_check"))
                     else:
-                        # Normal move completion
-                        safe_speech("Move completed. Your turn.")
-                        
-                        # Occasionally add a chess quote
-                        if random.random() < 0.1:  # 10% chance
+                        safe_speech("I captured your piece!")
+                
+                # Check if the move resulted in checkmate or check
+                if is_checkmate:
+                    # This was a checkmate move
+                    try:
+                        checkmate_response = get_random_response("checkmate_win")
+                        safe_speech(checkmate_response if checkmate_response else "Checkmate! I win.")
+                    except Exception:
+                        safe_speech("Checkmate! I win.")
+                elif is_check:
+                    # This was a check move
+                    try:
+                        check_response = get_random_response("in_check")
+                        safe_speech(check_response if check_response else "Check!")
+                    except Exception:
+                        safe_speech("Check!")
+                else:
+                    # Normal move completion
+                    safe_speech("Move completed. Your turn.")
+                    
+                    # Occasionally add a chess quote
+                    if random.random() < 0.1:  # 10% chance
+                        try:
                             time.sleep(0.7)
                             quote = get_random_chess_quote()
-                            safe_speech(f"By the way, here's a thought: {quote}")
-                else:
-                    # Simple fallback that doesn't rely on move analysis
-                    safe_speech(f"I moved from {source} to {target}. Your turn.")
+                            if quote:  # Ensure quote isn't None/empty
+                                safe_speech(f"By the way, here's a thought: {quote}")
+                        except Exception:
+                            pass  # Skip quote if any error occurs
+                        
             except Exception as e:
-                # If the enhanced speech analysis fails, fall back to a simple announcement
+                # Comprehensive error handling with guaranteed fallback
                 logger.warning(f"Error using speech for move completion: {e}")
-                logger.debug(traceback.format_exc())
                 
                 try:
-                    # Simple fallback that doesn't rely on move analysis
-                    safe_speech(f"I moved from {source} to {target}. Your turn.")
-                except Exception as speech_e:
-                    logger.warning(f"Error using fallback speech: {speech_e}")
+                    # Ultimate fallback that will always work
+                    safe_speech("I've made my move. Your turn now.")
+                except Exception as fallback_error:
+                    # Log but continue - non-critical feature
+                    logger.warning(f"Even fallback speech failed: {fallback_error}")
         
         update_status("Move completed. Your turn.", "INFO")
         print("\n✓ Robot move completed successfully")
